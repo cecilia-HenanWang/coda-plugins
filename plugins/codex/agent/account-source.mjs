@@ -1,9 +1,11 @@
 // The account source another plugin plugs into Codex (the `account-source` extension point, docs/plugins.md「内置插件：Codex」):
 // its command, started once and asked over its standard input and output, one JSON object a line.
 //   → { "id": 1, "method": "selected" }                       ← { "id": 1, "result": { "account": { "id", "name" } | null } }
-//   → { "id": 2, "method": "tokens", "params": { "account" } } ← { "id": 2, "result": { "accessToken", "chatgptAccountId", "chatgptPlanType" } }
-// Either may answer `{ "id", "error": { "message" } }`. No account chosen (`null`) leaves Codex with this machine's own login;
-// so does `"native"` before any other was used. A source that ends is started again when next asked.
+//   → { "id": 2, "method": "tokens", "params": { "account", "refresh"? } } ← { "id": 2, "result": { "accessToken", "chatgptAccountId", "chatgptPlanType" } }
+// `refresh: true` asks the owner to renew a rejected access token, even before its expiry.
+// Either may answer `{ "id", "error": { "message" } }`. A source taking full ownership reports an error until an account
+// is chosen; a legacy source's `null` leaves the underlying login as it is. A source that ends is started again when asked.
+// An installed source owns the account panel and handles `--login` for Codex's existing login entry.
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { readLines } from './lines.mjs';
@@ -14,15 +16,20 @@ export function accountSource(env = process.env) {
   return points?.['account-source']?.[0] ?? null;
 }
 
+export function sourceEnv(source, env = process.env) {
+  return { ...env, CODA_PLUGIN_PATH: source.path, ...(source.state ? { CODA_PLUGIN_STATE: source.state } : {}),
+    CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: env.CODA_PLUGIN_PATH }),
+    PATH: [dirname(process.execPath), env.PATH].filter(Boolean).join(':') };
+}
+
 export class AccountSource {
   constructor(source, { env = process.env, timeoutMs = 10_000 } = {}) {
     this.source = source; this.env = env; this.timeoutMs = timeoutMs; this.next = 0; this.pending = new Map(); this.child = null; this.closed = false;
   }
   start() {
-    const { command, path, state } = this.source;
+    const { command } = this.source;
     // As a panel's command is run (docs/plugins.md「面板」): its plugin's directory and state, and this Node first on the PATH.
-    const child = spawn('/bin/sh', ['-c', command], { env: { ...this.env, CODA_PLUGIN_PATH: path, ...(state ? { CODA_PLUGIN_STATE: state } : {}),
-      PATH: [dirname(process.execPath), this.env.PATH].filter(Boolean).join(':') },
+    const child = spawn('/bin/sh', ['-c', command], { env: sourceEnv(this.source, this.env),
       stdio: ['pipe', 'pipe', 'ignore'] });
     child.stdin.on('error', () => {});
     readLines(child.stdout).on('line', line => {
@@ -55,8 +62,8 @@ export class AccountSource {
     if (typeof account?.id !== 'string' || !account.id) throw new Error('账号来源给的账号无效');
     return { id: account.id, name: typeof account.name === 'string' && account.name ? account.name.slice(0, 80) : account.id };
   }
-  async tokens(account) {
-    const tokens = await this.request('tokens', { account });
+  async tokens(account, { refresh = false } = {}) {
+    const tokens = await this.request('tokens', { account, ...(refresh ? { refresh: true } : {}) });
     if (typeof tokens.accessToken !== 'string' || typeof tokens.chatgptAccountId !== 'string') throw new Error('账号来源给的凭据不完整');
     return { accessToken: tokens.accessToken, chatgptAccountId: tokens.chatgptAccountId, ...(typeof tokens.chatgptPlanType === 'string' ? { chatgptPlanType: tokens.chatgptPlanType } : {}) };
   }

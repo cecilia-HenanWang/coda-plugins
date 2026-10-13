@@ -1,7 +1,7 @@
-// The Codex panel's reading: this machine's Codex login and its quota, printed once as `{ items }`. Codex not answering
-// fails the reading, which keeps the last one shown.
+// An account source owns its quota panel. Without one, show Codex's own login as before.
 import { withAppServer } from './app-server.mjs';
 import { panel } from './quota.mjs';
+import { accountSource } from '../agent/account-source.mjs';
 
-try { console.log(JSON.stringify(await withAppServer(panel))); }
+try { console.log(JSON.stringify(accountSource() ? { items: [] } : await withAppServer(panel))); }
 catch (error) { console.error(error.message); process.exit(1); }

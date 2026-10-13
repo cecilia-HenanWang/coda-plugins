@@ -1,8 +1,8 @@
 {
   "name": "codex",
   "displayName": "Codex",
-  "description": "Codex Agent：Coda 自带的入口在同一进程里运行锁定版本的 codex-acp，把子 Agent 与后台命令报成等待项；资源页的「Codex」面板显示本机登录的额度，可从 Coda 登录、使用完全重置。",
-  "version": "1.0.0",
+  "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent 与后台命令。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
+  "version": "1.1.0",
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.12.0",
     "@openai/codex": "0.162.1"
@@ -41,7 +41,7 @@
         "id": "login",
         "title": "Codex",
         "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
-        "maxAge": "PT5M",
+        "maxAge": "PT0S",
         "actions": {
           "reset": {
             "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
@@ -50,13 +50,13 @@
         },
         "signIn": {
           "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/cli.mjs\" login --device-auth",
-          "note": "登录保存在这台机器的 Codex 里，由 Codex 自己续期。"
+          "note": "接入账号插件后，登录会添加或更新插件管理的账号。"
         }
       }
     ],
     "extensionPoints": {
       "account-source": {
-        "description": "Codex 用哪个账号：当前选的是谁、给出它的令牌。没有插件接上时用这台机器上 Codex 自己的登录。"
+        "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度面板；接入后 Codex 自带的额度面板隐藏。"
       }
     }
   }

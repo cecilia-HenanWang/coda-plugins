@@ -1,5 +1,5 @@
 // A private connection to the Codex CLI's app-server (a copy of the codex plugin's scripts/app-server.mjs: a plugin uses
-// nothing of another's but what it plugs into). Here it runs in a home of its own and is handed a manager account's tokens.
+// nothing of another's but what it plugs into). Used for a managed account's home and isolated token checks.
 // The CLI is the codex plugin's (its `@openai/codex` dependency, found from its directory in `CODA_PLUGIN_DEPENDENCIES`), so
 // the panel asks the same Codex the sessions run.
 import { spawn } from 'node:child_process';
@@ -11,10 +11,10 @@ export const codexCli = (env = process.env) =>
   createRequire(join(JSON.parse(env.CODA_PLUGIN_DEPENDENCIES || '{}').codex ?? '', 'package.json')).resolve('@openai/codex/bin/codex.js');
 
 export class AppServer {
-  constructor({ env = process.env, command = [process.execPath, codexCli(env), 'app-server'],
+  constructor({ env = process.env, cwd, args = [], command = [process.execPath, codexCli(env), 'app-server', ...args],
     timeoutMs = 15_000, onMessage = null } = {}) {
     this.pending = new Map(); this.next = 0; this.timeoutMs = timeoutMs; this.onMessage = onMessage;
-    this.child = spawn(command[0], command.slice(1), { env, stdio: ['pipe', 'pipe', 'ignore'] });
+    this.child = spawn(command[0], command.slice(1), { env, cwd, stdio: ['pipe', 'pipe', 'ignore'] });
     this.child.stdin.on('error', () => {});
     readLines(this.child.stdout).on('line', line => {
       let message; try { message = JSON.parse(line); } catch { return; }

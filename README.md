@@ -12,7 +12,7 @@ plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（n
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，面板「Kimi」
 plugins/grok/            Grok：只有清单，运行机上的 Grok CLI 自己讲 ACP，面板「Grok」
 plugins/opencode/        OpenCode：只有清单，运行机上的 opencode acp
-plugins/codex-accounts/  Codex 多账号：接在 codex 的「账号来源」上，面板「Codex 多账号」（要 python3）
+plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：只有清单，运行机上的 Cursor CLI 自己讲 ACP
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示 Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
@@ -35,13 +35,43 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 | --- | --- | --- |
 | `codex` | `@agentclientprotocol/codex-acp` 1.12.0、`@openai/codex` 0.162.1；`overrides` 让 codex-acp 用同一个 `@openai/codex` | — |
 | `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.296（平台二进制是 SDK 自己的可选依赖） | — |
-| `codex-accounts` | 无：用 `codex` 插件的 Codex CLI（从 `CODA_PLUGIN_DEPENDENCIES` 给的目录找） | `python3`（读 codex-account 管理器的账号，`scripts/manager.py`）；依赖 `codex` 插件 |
+| `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI（面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI（面板可从 Coda 安装、登录） |
 | `opencode` | 无 | 已安装并登录的 `opencode` |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
+
+### Codex 账号与额度
+
+`codex-accounts` 2.0.0 自己管理账号，不需要预装账号管理器或 Python。安装时 Coda 安装它的 npm 依赖和
+`codex` 插件；本版接管额度、登录入口和续期通知的配套入口是 `codex` 1.1.0。已有安装升级时两个插件一起更新，
+Coda 内置副本同步时也一起带上这两个目录。
+
+- 首次使用会把运行机 `$CODEX_HOME/auth.json`（默认 `~/.codex/auth.json`）里的 ChatGPT 登录导入插件，作为第一个
+  普通受控账号并默认选用。原文件保留；之后的凭据、续期与选择都由插件维护，原登录文件后续变化不会替换受控账号。
+  只有系统钥匙串里的凭据无法从文件导入，需要在插件中登录一次。
+- 没有已有登录时，从「资源 › 添加资源 › Codex 多账号」完成设备码登录。已有账号后，通过面板菜单的「重新登录」
+  添加其他账号；登录同一身份会更新其凭据。添加第二个账号不会改变已选账号。
+- 接入后「Codex」自带的额度看板隐藏，只显示「Codex 多账号」里的账号额度。原 Codex 登录入口也委托给账号插件，
+  避免建立另一套登录；面板中没有「使用本机账号」。卸载账号插件后，Codex 自带看板恢复。
+- 每个账号支持选择、查看额度、使用完全重置和移除。选择在新会话和轮次交界处生效；移除已选账号后须重新选择或添加，
+  会话不会回退到原登录。首次导入只发生一次，移除的账号不会再次被自动导入。
+
+账号存放于 `CODA_PLUGIN_STATE/accounts/<身份摘要>/auth.json`，目录权限 0700、文件权限 0600。
+每个账号有独立的 `CODEX_HOME`，由插件依赖中的 Codex 执行设备码授权及 refresh-token 续期。
+跨进程的每账号锁覆盖续期、额度读取、重新登录和移除，避免多个会话同时使用同一个轮换凭据。
+会话只通过 `codex/account-source` 的私有管道拿到 access token；refresh token 留在受控登录文件中。
+登录存储与续期采用 [Codex 官方认证机制](https://learn.chatgpt.com/docs/auth#credential-storage)。
+
+旧版的 `selection.json` 仍然识别：`native` 转为首次导入的账号；指向其他旧账号的选择保留，并提示在插件中重新登录该账号，
+不会悄悄切换。新版不再读取旧外部管理器的账号库，其他账号可直接从插件添加。
+
+`codex/account-source` 的完整进程约定在 `plugins/codex/agent/account-source.mjs`：`selected` 返回身份和名称，
+`tokens` 返回该身份的 access token，`refresh: true` 要求续期；无可用选择应返回错误。来源还通过 `--login` 接受
+原 Codex 登录入口的委托，并自行提供额度面板。Codex 把自己的依赖目录通过 `CODA_PLUGIN_DEPENDENCIES.codex`
+交给来源，来源与面板使用同一份 Codex CLI。
 
 ### 升级 Agent 的 CLI 与 SDK
 

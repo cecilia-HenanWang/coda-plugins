@@ -12,21 +12,13 @@ import { AccountSource, accountSource } from './account-source.mjs';
 import { readLines } from './lines.mjs';
 
 class AccountError extends Error {}
-const NATIVE = 'native';
 const failed = (account, error) => new AccountError(`没能换到所选的 Codex 账号${account ? ` ${account.name}` : ''}：${error?.message || '凭据不可用'}。去「资源」重新选择或登录`);
 
 export function startAccountBridge({ source = new AccountSource(accountSource()), makeServer = options => new AppServer(options), input = process.stdin,
   output = value => process.stdout.write(`${JSON.stringify(value)}\n`) } = {}) {
-  // `handedIn`: a login was ever handed to this app-server, whether or not it took. From then on what it is signed in to is
-  // only what was handed in last, this machine's own login included.
-  let initialized = false, initializeId, applied = null, accountId = null, problem = null, handedIn = false, queue = Promise.resolve(), closing = false;
+  let initialized = false, initializeId, applied = null, accountId = null, problem = null, queue = Promise.resolve(), closing = false;
   const active = new Map(), starting = new Map();
   const schedule = work => { const next = queue.then(work); queue = next.catch(() => {}); return next; };
-  // The account to use now: none while nothing was chosen, nor for this machine's own login before any was handed in.
-  async function target() {
-    const selected = await source.selected();
-    return !selected || (selected.id === NATIVE && !handedIn) ? null : selected;
-  }
   async function login(tokens) {
     await server.request('account/login/start', { type: 'chatgptAuthTokens', ...tokens });
     const { account, workspaceRouting } = await server.request('account/read', { refreshToken: false });
@@ -36,7 +28,7 @@ export function startAccountBridge({ source = new AccountSource(accountSource())
   async function synchronize() {
     if (!initialized || closing) return null;
     let selected;
-    try { selected = await target(); } catch (error) { problem = failed(null, error); throw problem; }
+    try { selected = await source.selected(); } catch (error) { problem = failed(null, error); throw problem; }
     if (!selected || selected.id === applied?.id) { problem = null; return selected; }
     if (active.size || starting.size) return selected;
     try {
@@ -44,7 +36,7 @@ export function startAccountBridge({ source = new AccountSource(accountSource())
       // Closed while they were read, the server is gone: a request made of it now would wait out its timeout for nobody.
       if (closing) return selected;
       // Once login begins a failed one means the actual account is unknown.
-      applied = null; accountId = null; handedIn = true;
+      applied = null; accountId = null;
       await login(tokens);
       applied = selected; accountId = tokens.chatgptAccountId; problem = null;
       return selected;
@@ -63,7 +55,7 @@ export function startAccountBridge({ source = new AccountSource(accountSource())
       void (async () => {
         try {
           if (!account || (message.params?.previousAccountId && message.params.previousAccountId !== accountId)) throw new Error('当前没有 Coda 交给 Codex 的账号');
-          const tokens = await source.tokens(account.id);
+          const tokens = await source.tokens(account.id, { refresh: true });
           if (closing) return;
           if (tokens.chatgptAccountId !== accountId) throw new Error('账号来源给的凭据属于另一个账号');
           server.send({ id: message.id, result: tokens });

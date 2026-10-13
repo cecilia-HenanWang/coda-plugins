@@ -18,7 +18,9 @@ export function declaredPanel(id, panelId) {
 // The environment Coda gives a plugin's command: its own, the plugin's directory, and `extra` (state, arguments, and what a
 // test puts in place of the machine's).
 export const pluginEnv = (id, extra = {}) => {
-  const env = { ...process.env, CODA_PLUGIN_SETTINGS: '{}', ...extra, CODA_PLUGIN_PATH: pluginDir(id) };
+  const inherited = { ...process.env };
+  for (const key of ['CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_EXTENSIONS', 'CODA_PLUGIN_DEPENDENCIES']) delete inherited[key];
+  const env = { ...inherited, CODA_PLUGIN_SETTINGS: '{}', ...extra, CODA_PLUGIN_PATH: pluginDir(id) };
   env.PATH = [dirname(process.execPath), env.PATH].filter(Boolean).join(':');
   return env;
 };

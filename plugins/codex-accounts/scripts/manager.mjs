@@ -1,51 +1,179 @@
-// The codex-account manager this plugin reads (docs/plugins.md「内置插件：Codex 多账号」), and the choice it keeps: which of
-// its accounts Codex uses, or this machine's own login. Credentials are read under the manager's lock by manager.py, whose
-// output is never logged; neither they nor refresh tokens are copied anywhere.
-import { execFile } from 'node:child_process';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+// This plugin owns its accounts. Each has a Codex home below CODA_PLUGIN_STATE; Codex performs OAuth and renews its
+// auth.json there. Only access tokens cross the account-source pipe. No external account manager or Python is needed.
+import { createHash, randomUUID } from 'node:crypto';
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import lockfile from 'proper-lockfile';
+import { withAccountHome } from './codex.mjs';
 
-export const NATIVE = 'native';
-export const paths = (env = process.env) => ({
-  accounts: env.CODA_CODEX_ACCOUNTS || join(homedir(), '.local/state/cockpit-codex-account'),
-  // The manager's active account lives in Codex's own home, which is also this machine's own login.
-  native: env.CODEX_HOME || join(homedir(), '.codex'),
-});
-const unavailable = '账号凭据不可用，请在账号管理器更新登录后重试';
-function manager(args, at) {
-  return new Promise((resolve, reject) => {
-    execFile('python3', [fileURLToPath(new URL('manager.py', import.meta.url)), at.accounts, at.native, ...args], { timeout: 5000, maxBuffer: 2 * 1024 * 1024 },
-      (error, stdout) => {
-        if (error) return reject(new Error(error.code === 2 ? '账号管理器正在更新，请稍后重试'
-          : args[0] === NATIVE ? '本机登录的凭据读不到（已过期，或存在系统钥匙串里），在「Codex」面板重新登录' : unavailable));
-        try { resolve(JSON.parse(stdout)); } catch { reject(new Error(unavailable)); }
-      });
+const ID = /^[a-f0-9]{64}$/;
+export const identity = account => createHash('sha256').update(account).digest('hex');
+export const paths = (env = process.env) => {
+  if (!env.CODA_PLUGIN_STATE) throw new Error('Coda 没有提供插件状态目录');
+  return { state: env.CODA_PLUGIN_STATE, native: env.CODEX_HOME || join(homedir(), '.codex'), env };
+};
+const unavailable = '账号登录已失效，请在「Codex 多账号」重新登录该账号';
+const missing = '此账号尚未在插件中登录，请在「Codex 多账号」重新登录';
+function privateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!lstatSync(dir).isDirectory() || lstatSync(dir).isSymbolicLink()) throw new Error('账号目录不可用');
+  chmodSync(dir, 0o700);
+}
+export function prepare(at = paths()) {
+  privateDir(at.state); privateDir(join(at.state, 'accounts')); privateDir(join(at.state, 'locks'));
+}
+function readJSON(file) {
+  const stat = lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) throw new Error('账号文件不可用');
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+function writeJSON(file, value) {
+  const temp = `${file}.${randomUUID()}`;
+  try { writeFileSync(temp, JSON.stringify(value), { mode: 0o600, flag: 'wx', flush: true }); renameSync(temp, file); }
+  finally { rmSync(temp, { force: true }); }
+}
+// All credential writers take the same per-account lock, including quota reads (Codex may refresh during them).
+// Index changes take the store lock first. Locks have a heartbeat and recover after an abruptly ended process.
+async function locked(key, at, work) {
+  prepare(at);
+  let release;
+  try { release = await lockfile.lock(join(at.state, 'locks', key), { realpath: false, stale: 10_000,
+    retries: { retries: 20, minTimeout: 100, maxTimeout: 150, factor: 1 } }); }
+  catch { throw new Error('账号正在更新，请稍后重试'); }
+  try { return await work(); } finally { await release(); }
+}
+function stored(at) {
+  try {
+    const value = readJSON(join(at.state, 'accounts.json'));
+    if (value.version !== 1 || !Array.isArray(value.accounts) || value.accounts.some(a => !ID.test(a?.identity) || typeof a.alias !== 'string')) throw Error();
+    return value.accounts;
+  } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('读不了插件保存的账号列表'); }
+}
+// Import the existing Codex login once, as an ordinary managed account. A store, even an empty one, records that this
+// has happened: removing the imported account must not make it reappear on the next panel read.
+export async function list(at = paths(), { recoverImport = false } = {}) {
+  const known = stored(at);
+  if (known !== null) return known;
+  return locked('store', at, async () => {
+    const existing = stored(at);
+    if (existing !== null) return existing;
+    const accounts = [];
+    let login;
+    try {
+      const auth = readJSON(join(at.native, 'auth.json'));
+      if (auth?.tokens?.access_token && auth.tokens.refresh_token) login = readAuth(at.native);
+    } catch (error) {
+      if (error.code !== 'ENOENT' && !recoverImport) throw new Error('无法导入已有 Codex 登录，请从「添加资源」登录 Codex 多账号');
+    }
+    if (login) {
+      const id = identity(login.tokens.chatgptAccountId);
+      let email;
+      try { email = JSON.parse(Buffer.from(login.auth.tokens.id_token.split('.')[1], 'base64url').toString('utf8')).email; } catch {}
+      const home = join(at.state, 'accounts', id);
+      privateDir(home); writeJSON(join(home, 'auth.json'), login.auth);
+      accounts.push({ identity: id, alias: typeof email === 'string' && email ? email : `账号 ${id.slice(0, 8)}`, plan: login.tokens.chatgptPlanType ?? null });
+    }
+    const chosen = selection(at);
+    // The old plugin's "native" choice becomes the imported identity, not a second kind of account.
+    if (chosen === null || chosen === 'native') writeJSON(join(at.state, 'selection.json'), { account: accounts[0]?.identity ?? null });
+    writeJSON(join(at.state, 'accounts.json'), { version: 1, accounts });
+    return accounts;
   });
 }
-// The manager's accounts: `{ alias, identity, plan, active }`, identity being an opaque digest of the account's ID. None
-// without a manager on this machine.
-export async function list(at = paths()) {
-  try { readFileSync(join(at.accounts, 'registry.json')); }
-  catch (error) { if (error.code === 'ENOENT') return null; throw new Error(`读不了账号管理器：${error.code ?? error.message}`); }
-  return manager(['list'], at);
+export function selection(at = paths()) {
+  try {
+    const selected = readJSON(join(at.state, 'selection.json')).account ?? null;
+    if (selected !== null && selected !== 'native' && !ID.test(selected)) throw Error();
+    return selected;
+  } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('读不了所选的账号'); }
 }
-// An account's tokens, checked to be the account the identity names. `native` is this machine's own login.
-export const tokens = (account, at = paths()) => account === NATIVE ? manager([NATIVE], at)
-  : list(at).then(accounts => {
-    const found = accounts?.find(a => a.identity === account);
-    if (!found) throw new Error('账号管理器里已没有这个账号');
-    return manager(['read', found.alias, found.identity], at);
+export async function choose(account, at = paths()) {
+  await list(at);
+  return locked('store', at, async () => {
+    if (!(await list(at)).some(a => a.identity === account)) throw new Error(missing);
+    writeJSON(join(at.state, 'selection.json'), { account });
   });
-
-// The choice, in this plugin's state: `{ account }`, an identity or `native`; none while nothing was chosen.
-const selectionFile = (env = process.env) => join(env.CODA_PLUGIN_STATE, 'selection.json');
-export function selection(env = process.env) {
-  try { return JSON.parse(readFileSync(selectionFile(env), 'utf8')).account ?? null; }
-  catch (error) { if (error.code === 'ENOENT') return null; throw new Error('读不了所选的账号'); }
 }
-export function choose(account, env = process.env) {
-  const file = selectionFile(env), temp = `${file}.${process.pid}`;
-  writeFileSync(temp, JSON.stringify({ account }), { mode: 0o600 }); renameSync(temp, file);
+function homeFor(account, at) {
+  if (!ID.test(account)) throw new Error(missing);
+  const home = join(at.state, 'accounts', account);
+  try { if (!lstatSync(home).isDirectory() || lstatSync(home).isSymbolicLink()) throw Error(); }
+  catch { throw new Error(missing); }
+  return home;
+}
+export function readAuth(home, expected) {
+  try {
+    const auth = readJSON(join(home, 'auth.json')), accessToken = auth.tokens.access_token;
+    const claims = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64url').toString('utf8'));
+    const info = claims['https://api.openai.com/auth'], chatgptAccountId = info.chatgpt_account_id;
+    if (typeof chatgptAccountId !== 'string' || !chatgptAccountId || !Number.isFinite(claims.exp)
+      || (expected && identity(chatgptAccountId) !== expected)
+      || (auth.tokens.account_id && auth.tokens.account_id !== chatgptAccountId)) throw Error();
+    return { auth, expires: claims.exp * 1000, tokens: { accessToken, chatgptAccountId,
+      ...(typeof info.chatgpt_plan_type === 'string' ? { chatgptPlanType: info.chatgpt_plan_type } : {}) } };
+  } catch { throw new Error(unavailable); }
+}
+async function checked(server, expected, refreshToken = false) {
+  const result = await server.request('account/read', { refreshToken });
+  if (result.account?.type !== 'chatgpt' || identity(result.workspaceRouting?.chatgptAccountId ?? '') !== expected) throw new Error('Codex 登录后的账号与所选的不符');
+  return result.account;
+}
+// Quota/reset requests use this account's managed login, so Codex itself handles a 401 and persists renewed tokens.
+export async function withManagedAccount(account, work, at = paths(), options) {
+  if (!(await list(at)).some(a => a.identity === account)) throw new Error(missing);
+  return locked(account, at, async () => {
+    const home = homeFor(account, at);
+    readAuth(home, account);
+    return withAccountHome(home, async server => { await checked(server, account); return work(server); }, { env: at.env, ...options });
+  });
+}
+// Refresh only when needed or explicitly requested after a rejected access token. Recheck under the lock so concurrent
+// sessions do not refresh the same rotating refresh token at once. The full auth document never leaves this module.
+export async function tokens(account, at = paths(), { refresh = false, ...options } = {}) {
+  if (!(await list(at)).some(a => a.identity === account)) throw new Error(missing);
+  return locked(account, at, async () => {
+    const home = homeFor(account, at), expected = account;
+    let current = readAuth(home, expected);
+    if (refresh || current.expires <= Date.now() + 60_000) {
+      try {
+        await withAccountHome(home, server => checked(server, identity(current.tokens.chatgptAccountId), true), { env: at.env, ...options });
+        current = readAuth(home, expected);
+      } catch { throw new Error(unavailable); }
+    }
+    if (current.expires <= Date.now() + 30_000) throw new Error(unavailable);
+    return current.tokens;
+  });
+}
+// Commit a completed device login. Logging in to an existing identity replaces its credentials; other accounts and
+// their selection stay intact. Only the first account is selected automatically, unless a choice was already saved.
+export async function saveLogin(home, at = paths(), { isCancelled = () => false, ...options } = {}) {
+  await list(at);
+  const initial = readAuth(home), id = identity(initial.tokens.chatgptAccountId);
+  if (initial.expires <= Date.now() + 30_000 || !initial.auth.tokens.refresh_token) throw new Error(unavailable);
+  const account = await withAccountHome(home, server => checked(server, id), { env: at.env, ...options });
+  return locked('store', at, () => locked(id, at, async () => {
+    const accounts = await list(at), previous = accounts.find(a => a.identity === id);
+    if (isCancelled()) throw new Error('登录已取消');
+    const record = { identity: id, alias: account.email || previous?.alias || `账号 ${id.slice(0, 8)}`, plan: account.planType ?? null };
+    const target = join(at.state, 'accounts', id);
+    privateDir(target);
+    writeJSON(join(target, 'auth.json'), readAuth(home, id).auth);
+    writeJSON(join(at.state, 'accounts.json'), { version: 1, accounts: previous ? accounts.map(a => a.identity === id ? record : a) : [...accounts, record] });
+    if (!accounts.length && selection(at) === null) writeJSON(join(at.state, 'selection.json'), { account: id });
+    return record;
+  }));
+}
+export async function remove(account, at = paths()) {
+  if (!ID.test(account)) throw new Error('没有指明要移除的账号');
+  await list(at);
+  return locked('store', at, () => locked(account, at, async () => {
+    const accounts = await list(at);
+    if (!accounts.some(a => a.identity === account)) throw new Error(missing);
+    const home = join(at.state, 'accounts', account);
+    // Remove secrets before the index: a failed removal remains visible and can be retried.
+    rmSync(home, { recursive: true, force: true });
+    if (selection(at) === account) writeJSON(join(at.state, 'selection.json'), { account: null });
+    writeJSON(join(at.state, 'accounts.json'), { version: 1, accounts: accounts.filter(a => a.identity !== account) });
+  }));
 }

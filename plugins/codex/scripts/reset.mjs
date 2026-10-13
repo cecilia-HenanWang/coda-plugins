@@ -3,6 +3,9 @@
 import { randomUUID } from 'node:crypto';
 import { withAppServer } from './app-server.mjs';
 import { outcomes } from './quota.mjs';
+import { accountSource } from '../agent/account-source.mjs';
+
+if (accountSource()) { console.error('额度已由账号插件接管，请在账号面板使用完全重置'); process.exit(1); }
 
 const { creditId } = JSON.parse(process.env.CODA_PANEL_ARGS || '{}');
 if (typeof creditId !== 'string' || !creditId) { console.error('没有指明用哪一次完全重置'); process.exit(1); }
