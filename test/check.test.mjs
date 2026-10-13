@@ -276,3 +276,14 @@ describe('a check that is stopped', () => {
     assert.equal(alive(), false, 'its process is gone');
   });
 });
+
+
+test('the checker follows Coda service retry policy and stops at the shared budget', async () => {
+  const retryLimits = { ...limits, retryDelays: [5, 10, 20] };
+  const once = (await checkPlugin(plugin({ mode: 'service-failure-once' }), { live: true, limits: retryLimits })).report;
+  assertPasses(once, ['live.turn']);
+  assert.equal(once.items.filter(x => x.rule === 'live.service-retry').length, 1);
+  const always = (await checkPlugin(plugin({ mode: 'service-failure-always' }), { live: true, limits: retryLimits })).report;
+  assert.equal(always.items.filter(x => x.rule === 'live.service-retry').length, 3);
+  assert.deepEqual(failed(always), ['live.turn']);
+});

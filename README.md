@@ -76,6 +76,17 @@ Coda 内置副本同步时也一起带上这两个目录。
 原 Codex 登录入口的委托，并自行提供额度面板。Codex 把自己的依赖目录通过 `CODA_PLUGIN_DEPENDENCIES.codex`
 交给来源，来源与面板使用同一份 Codex CLI。
 
+Codex 插件在 ACP 出口把 codex-acp 错误 `data.message`、`data.details` 或字符串 `data` 中的原因补进标准 `error.message`，
+详情裁掉两端空白并去重，错误码、请求 ID 与原始 `data` 保留。Coda 和其他 ACP 客户端直接显示 `message` 即可；
+这层适配由插件维护，客户端无需理解 codex-acp 的内部错误格式。
+
+Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.failed` 而没有单独错误通知的情况。
+插件将服务端内部错误、5xx、响应流中断、模型容量不足，以及已知的 `model '…' is not enabled in rustponsesapi` 报成
+`error.data._meta.coda.failure: {kind: "service_unavailable", input: "accepted"}`。新轮请求明确被拒绝、只给
+`Internal error` 时按临时故障报告 `input: "not_accepted"`；这表示允许有限重试，不表示已确定历史故障根因。
+明确的额度耗尽、认证、上下文限制、参数、配置或沙箱错误不带此标记。
+插件不做退避或重新发送；Coda 按通用协议统一退避，客户端只支持 ACP 时仍能读到完整错误。
+
 ### 升级 Agent 的 CLI 与 SDK
 
 Codex 会话、面板与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@openai/codex`；Claude 的是 `claude` 插件依赖的

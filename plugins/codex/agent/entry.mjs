@@ -16,6 +16,7 @@ import { networkedCodexDevelopment } from './network.mjs';
 import { codexOptionsAsShown } from './options.mjs';
 import { input, listen, relayedCodexStreams } from './relay.mjs';
 import { CodexWaits } from './waits.mjs';
+import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 
 const env = process.env;
 // A session starts read-only, unless its machine's configuration says otherwise.
@@ -33,7 +34,7 @@ if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
 
 const waits = new CodexWaits(), parse = line => { try { return JSON.parse(line); } catch { return null; } };
 const say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
-listen(line => { for (const message of waits.fromAgent(parse(line))) say(message); });
+listen(line => { for (const message of waits.fromAgent(parse(line))) say(explainCodexError(message)); });
 readLines(process.stdin).on('line', line => {
   const message = parse(line);
   if (!message || typeof message !== 'object') return;
@@ -47,6 +48,6 @@ const adapter = new URL(import.meta.resolve('@agentclientprotocol/codex-acp'));
 registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
-  return { ...loaded, source: codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8'))))))) };
+  return { ...loaded, source: reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8')))))))) };
 } });
 await import(adapter.href);

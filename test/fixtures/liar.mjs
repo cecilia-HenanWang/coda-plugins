@@ -30,6 +30,9 @@ const methods = {
   'session/load': () => { throw Object.assign(new Error('会话不见了'), { code: -32002 }); },
   'session/prompt': async ({ sessionId }) => {
     const me = turn = { cancelled: false }, first = ++turns === 1;
+    if (mode === 'service-failure-always' || (mode === 'service-failure-once' && first))
+      throw Object.assign(new Error('Service unavailable'), { code: -32603,
+        data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted' } } } } });
     if (mode === 'stdout-noise') process.stdout.write('starting turn...\n');
     if (mode === 'bad-update') notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: 'hi' } });
     if (mode === 'foreign-session') say('someone-else', 'hi');
@@ -69,7 +72,7 @@ createInterface({ input: process.stdin }).on('line', async line => {
   const method = methods[message.method];
   if (!method) { send({ id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } }); return; }
   try { send({ id: message.id, result: await method(message.params ?? {}) }); }
-  catch (error) { send({ id: message.id, error: { code: error.code ?? -32603, message: error.message } }); }
+  catch (error) { send({ id: message.id, error: { code: error.code ?? -32603, message: error.message, data: error.data } }); }
   // Right after the first turn ended, with nothing being handled: out of any turn.
   if (message.method === 'session/prompt' && mode === 'permission-outside' && turns === 1) void ask('session/request_permission', { sessionId: message.params.sessionId,
     toolCall: { toolCallId: 'c2', title: '之后再问' }, options: [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }] });

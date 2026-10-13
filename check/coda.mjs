@@ -4,8 +4,8 @@
 // commit, and test/protocol-copy.test.mjs keeps the two together).
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
-// The Coda commit these rules were copied from (coda-console/coda main, PR #1177).
-export const CODA_COMMIT = 'fda35b16d89b41b675787f30c8e98f8cabdad952';
+// The Coda commit these rules were copied from (shared service-failure recovery).
+export const CODA_COMMIT = 'e76ac865c907e7309faa26051b5364451ce51c79';
 // The ACP version Coda speaks: the SDK's (backend/package.json pins @agentclientprotocol/sdk 1.4.0, as package.json here).
 export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
@@ -16,6 +16,15 @@ export const clientCapabilities = () => ({
   session: { compaction: {}, configOptions: { boolean: {} } },
   _meta: { coda: { waits: {} } },
 });
+// Service failures and the retry policy (backend/src/application/prompt-recovery.mjs).
+export function serviceFailure(error) {
+  const failure = error?.data?._meta?.coda?.failure;
+  return failure?.kind === 'service_unavailable' && ['accepted', 'not_accepted'].includes(failure.input) ? failure : null;
+}
+// The former capacity/model-unavailable policy, shared by every agent that reports a service failure.
+export const RETRY_DELAYS = [15_000, 30_000, 60_000];
+export const continuationPrompt = '继续完成当前任务，沿用已有上下文和已完成的工作，从尚未完成的部分接着执行。';
+
 // The agent refuses until it is signed in: ACP's auth_required (signedOut).
 export const SIGNED_OUT = -32000;
 // What Coda answers an agent request it has no handler for (the SDK's): Coda handles only approvals and forms.
