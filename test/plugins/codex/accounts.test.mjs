@@ -19,7 +19,7 @@ async function bridgeFixture(t, chosen = null) {
   const accounts = { a: { id: 'a', name: 'a' }, b: { id: 'b', name: 'b' }, native: { id: 'native', name: '本机登录' } };
   let choice = chosen, signedIn = null, incoming, closeServer, closed = false;
   const hooks = { tokens: async id => ({ accessToken: `SECRET-${id}`, chatgptAccountId: `${id}-account` }), login: async () => {} };
-  const source = { selected: async () => { if (choice === 'gone') throw Error('账号来源没有答复'); return choice && accounts[choice]; }, tokens: id => hooks.tokens(id), close() {} };
+  const source = { selected: async () => { if (choice === 'gone') throw Error('账号来源没有答复'); return choice && accounts[choice]; }, tokens: (id, options) => hooks.tokens(id, options), close() {} };
   const fake = {
     send: value => { if (closed) late.push(value); sent.push(value); },
     request: async (method, params) => {
@@ -40,6 +40,8 @@ const error = (f, id) => f.outputs.find(m => m.id === id)?.error;
 test('the bridge switches within the same process and thread, defers busy turns, renews without leaking tokens and blocks a failed switch', async t => {
   const f = await bridgeFixture(t, 'a');
   assert.deepEqual(f.logins, ['a']);
+  const renewed = [];
+  f.hooks.tokens = async (id, options) => { if (options?.refresh) renewed.push(id); return { accessToken: `SECRET-${id}`, chatgptAccountId: `${id}-account` }; };
   await f.send('turn/start', { threadId: 'same-thread' }, 'turn1');
   f.incoming({ id: 'turn1', result: { turn: { id: 't1' } } }); f.incoming({ method: 'turn/started', params: { threadId: 'same-thread', turn: { id: 't1' } } });
   f.choose('b');
@@ -48,6 +50,7 @@ test('the bridge switches within the same process and thread, defers busy turns,
   f.incoming({ id: 'renew-busy', method: 'account/chatgptAuthTokens/refresh', params: { previousAccountId: 'a-account' } });
   await until(() => f.sent.some(m => m.id === 'renew-busy'));
   assert.equal(f.sent.find(m => m.id === 'renew-busy').result.accessToken, 'SECRET-a');
+  assert.deepEqual(renewed, ['a'], 'a rejected token requests renewal of the running account, not the new selection');
   f.incoming({ method: 'turn/completed', params: { threadId: 'same-thread', turn: { id: 't1' } } });
   await f.bridge.settled();
   assert.deepEqual(f.logins, ['a', 'b']);
@@ -72,23 +75,23 @@ test('the bridge switches within the same process and thread, defers busy turns,
   assert.deepEqual(f.logins, ['a', 'b', 'a']);
 });
 
-test('nothing chosen, or this machine\'s own login before any other, leaves Codex its own login; going back to it takes its tokens', async t => {
+test('legacy null leaves auth alone; every selected identity is explicitly handed in, including a legacy native ID', async t => {
   const f = await bridgeFixture(t, null);
   await f.send('account/read'); await f.send('thread/start');
   assert.deepEqual(f.logins, []);
   await f.send('account/login/start', { type: 'chatgpt' }, 'own-login');
   assert.ok(f.sent.some(m => m.id === 'own-login'), "ACP's own login still passes through");
   f.choose('native'); await f.send('turn/start', { threadId: 'thread' }, 'native-turn');
-  assert.deepEqual(f.logins, []); assert.ok(f.sent.some(m => m.id === 'native-turn'));
+  assert.deepEqual(f.logins, ['native']); assert.ok(f.sent.some(m => m.id === 'native-turn'));
   f.incoming({ id: 'native-turn', result: { turn: { id: 't0' } } }); f.incoming({ method: 'turn/completed', params: { threadId: 'thread', turn: { id: 't0' } } });
   await f.bridge.settled();
   f.choose('a'); await f.send('account/read');
-  assert.deepEqual(f.logins, ['a']);
+  assert.deepEqual(f.logins, ['native', 'a']);
   await f.send('account/logout', {}, 'logout');
   assert.match(error(f, 'logout').message, /在「资源」里切换/, 'nor may ACP sign out what Coda handed in');
   // Once another was used, this machine's own login is handed in as the others are, by the source.
   f.choose('native'); await f.send('account/read');
-  assert.deepEqual(f.logins, ['a', 'native']);
+  assert.deepEqual(f.logins, ['native', 'a', 'native']);
 });
 
 // Review of #1130: a failed switch leaves the server signed in to the account before, or to one unknown; this machine's own
