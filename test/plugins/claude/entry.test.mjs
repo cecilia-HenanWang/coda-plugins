@@ -17,6 +17,7 @@ import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ClaudeSessionLimits } from '../../../plugins/claude/agent/limits.mjs';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
+import { substituted } from '../substitute.mjs';
 
 // The Claude entry on its own (agents/claude/), Coda's side played here: what it is asked over ACP, and what it says.
 const entry = fileURLToPath(new URL('../../../plugins/claude/agent/entry.mjs', import.meta.url));
@@ -441,7 +442,7 @@ test('the entry speaks ACP over standard input and output with the SDK it is giv
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-stdio-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const run = () => {
-    const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CODA_CLAUDE_SDK_ENTRY: fixture } });
+    const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...substituted({ '@anthropic-ai/claude-agent-sdk': fixture }) } });
     t.after(() => child.kill());
     const messages = [], pending = new Map(); let stderr = '', next = 0;
     child.stderr.on('data', chunk => { stderr += chunk; });

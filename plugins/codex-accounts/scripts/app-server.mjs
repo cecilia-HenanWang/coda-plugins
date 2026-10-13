@@ -1,10 +1,17 @@
 // A private connection to the Codex CLI's app-server (a copy of the codex plugin's scripts/app-server.mjs: a plugin uses
 // nothing of another's but what it plugs into). Here it runs in a home of its own and is handed a manager account's tokens.
+// The CLI is the codex plugin's (its `@openai/codex` dependency, found from its directory in `CODA_PLUGIN_DEPENDENCIES`), so
+// the panel asks the same Codex the sessions run.
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { readLines } from './lines.mjs';
 
+export const codexCli = (env = process.env) =>
+  createRequire(join(JSON.parse(env.CODA_PLUGIN_DEPENDENCIES || '{}').codex ?? '', 'package.json')).resolve('@openai/codex/bin/codex.js');
+
 export class AppServer {
-  constructor({ env = process.env, command = [process.execPath, env.CODA_CODEX_ENTRY || new URL(import.meta.resolve('@openai/codex/bin/codex.js')).pathname, 'app-server'],
+  constructor({ env = process.env, command = [process.execPath, codexCli(env), 'app-server'],
     timeoutMs = 15_000, onMessage = null } = {}) {
     this.pending = new Map(); this.next = 0; this.timeoutMs = timeoutMs; this.onMessage = onMessage;
     this.child = spawn(command[0], command.slice(1), { env, stdio: ['pipe', 'pipe', 'ignore'] });

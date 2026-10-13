@@ -1,6 +1,7 @@
 // The plugins of this repository as Coda takes them: each passes the checker's manifest level, declares in its package.json
 // exactly the packages its code uses, with a package-lock.json npm ci installs from, and finds them in its own
-// node_modules (Coda installs them in the plugin's version directory, with nothing above it to fall back on).
+// node_modules (Coda installs them in the plugin's version directory, with nothing above it to fall back on). A package
+// one of its `extensionDependencies` declares it may use from that plugin's directory instead (CODA_PLUGIN_DEPENDENCIES).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -10,6 +11,7 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../check/index.mjs';
 import { claudeBinary } from '../../plugins/claude/scripts/login.mjs';
+import { codexCli } from '../../plugins/codex-accounts/scripts/app-server.mjs';
 import { pluginDir, resolveFrom } from './plugin.mjs';
 
 const plugins = readdirSync(fileURLToPath(new URL('../../plugins', import.meta.url))).filter(id => existsSync(join(pluginDir(id), 'package.json')));
@@ -47,9 +49,10 @@ test('a package is found however a plugin asks for it, and only a package', () =
 
 describe('the plugins here', () => {
   for (const id of plugins) describe(`plugins/${id}`, () => {
-    const dir = pluginDir(id), { dependencies = {}, optionalDependencies = {}, overrides = {} } = manifest(id);
+    const dir = pluginDir(id), { dependencies = {}, optionalDependencies = {}, overrides = {}, extensionDependencies = [] } = manifest(id);
     const declared = Object.keys({ ...dependencies, ...optionalDependencies }).sort();
-    const used = [...new Set(files(dir).flatMap(file => packagesUsed(readFileSync(file, 'utf8'))))].sort();
+    const theirs = extensionDependencies.flatMap(other => Object.keys(manifest(other).dependencies ?? {}));
+    const used = [...new Set(files(dir).flatMap(file => packagesUsed(readFileSync(file, 'utf8'))))].filter(name => !theirs.includes(name)).sort();
 
     test('passes the checker\'s manifest level', async () => {
       const { report } = await checkPlugin(dir, { manifestOnly: true });
@@ -94,8 +97,12 @@ describe('the plugins here', () => {
     assert.equal(relative(pluginDir('codex'), codex), join('node_modules', '@openai', 'codex', 'package.json'));
     assert.equal(JSON.parse(readFileSync(codex, 'utf8')).version, manifest('codex').dependencies['@openai/codex']);
   });
+  test('codex-accounts runs the Codex of the codex plugin it depends on', () => {
+    const cli = codexCli({ CODA_PLUGIN_DEPENDENCIES: JSON.stringify({ codex: pluginDir('codex') }) });
+    assert.equal(relative(pluginDir('codex'), cli), join('node_modules', '@openai', 'codex', 'bin', 'codex.js'));
+  });
   test('the Claude panel\'s login finds the CLI beside the plugin\'s own Claude SDK', () => {
-    const binary = claudeBinary({});
+    const binary = claudeBinary();
     assert.ok(binary && relative(join(pluginDir('claude'), 'node_modules', '@anthropic-ai'), binary).split(sep)[0].startsWith('claude-agent-sdk-'), binary);
   });
 });

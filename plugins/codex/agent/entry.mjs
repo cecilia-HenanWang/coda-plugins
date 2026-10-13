@@ -29,7 +29,7 @@ if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
   const shim = join(env.CODA_PLUGIN_STATE, `account-bridge-${createHash('sha256').update(program).digest('hex').slice(0, 12)}`);
   if (!existsSync(shim)) { writeFileSync(`${shim}.${process.pid}`, program, { mode: 0o700 }); renameSync(`${shim}.${process.pid}`, shim); }
   env.CODEX_PATH = shim;
-} else if (!env.CODEX_PATH && env.CODA_CODEX_ENTRY) env.CODEX_PATH = env.CODA_CODEX_ENTRY;
+}
 
 const waits = new CodexWaits(), parse = line => { try { return JSON.parse(line); } catch { return null; } };
 const say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
