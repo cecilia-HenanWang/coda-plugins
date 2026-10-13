@@ -2,10 +2,10 @@
 // adapters/plugin-command.mjs), what it prints held to Coda's panel output (domain/panels.mjs `panelItems`, copied here).
 // Its actions are not run: a button may change things (switch an account, spend a reset), and only a person presses it.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { ARGS_LIMIT, ITEM_LIMITS, ITEM_TYPES, OUTPUT_LIMIT, PANEL_READ_LIMIT } from './coda.mjs';
+import { group, temporary } from './leftovers.mjs';
 
 class Invalid extends Error {}
 const check = (condition, message) => { if (!condition) throw new Invalid(message); };
@@ -72,13 +72,14 @@ export function panelItems(output, panel) {
   return value.items.flatMap((r, i) => item(r, `items[${i}]`, panel.actions, false));
 }
 
-// `sh -c` in its own process group from a temporary directory, stopped past the deadline or past 64 KiB of output.
+// `sh -c` in its own process group from a temporary directory, stopped past the deadline or past 64 KiB of output. The
+// group goes with the checker if that ends first (a Ctrl-C does not reach it).
 function run(command, env, limit) {
   return new Promise(resolve => {
     const child = spawn('/bin/sh', ['-c', command], { cwd: tmpdir(), env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const out = [], err = [];
+    const ended = group(child.pid), out = [], err = [];
     let size = 0, overflow = false, timedOut = false;
-    const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
+    const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} ended(); };
     const timer = setTimeout(() => { timedOut = true; kill(); }, limit);
     child.stdout.on('data', chunk => { size += chunk.length; if (size > OUTPUT_LIMIT) { overflow = true; kill(); } else out.push(chunk); });
     child.stderr.on('data', chunk => err.push(chunk));
@@ -90,9 +91,10 @@ function run(command, env, limit) {
 const lastLine = text => text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n').map(l => l.trim()).filter(Boolean).at(-1)?.slice(0, 200) ?? '';
 
 export async function checkPanel({ panel, pluginDir, settings, say, limit = PANEL_READ_LIMIT }) {
-  const state = mkdtempSync(join(tmpdir(), 'coda-plugin-check-state-'));
+  // The plugin's state directory, which Coda keeps for it; here a temporary one, gone however the checker ends.
+  const state = temporary('coda-plugin-check-state-');
   try {
-    const env = { ...process.env, CODA_PLUGIN_PATH: pluginDir, CODA_PLUGIN_STATE: state, CODA_PLUGIN_SETTINGS: JSON.stringify(settings),
+    const env = { ...process.env, CODA_PLUGIN_PATH: pluginDir, CODA_PLUGIN_STATE: state.dir, CODA_PLUGIN_SETTINGS: JSON.stringify(settings),
       PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(':') };
     const started = Date.now(), result = await run(panel.command, env, limit);
     if (result.timedOut) return say.fail('panel.read', `读取 ${limit / 1000} 秒没结束：Coda 停下这次读取`);
@@ -105,6 +107,6 @@ export async function checkPanel({ panel, pluginDir, settings, say, limit = PANE
     else say.pass('panel.read', `读取 ${((Date.now() - started) / 1000).toFixed(1)} 秒，输出合面板格式：${counts}`);
     if (Object.keys(panel.actions).length) say.skip('panel.actions', `动作 ${Object.keys(panel.actions).join('、')} 不运行：按钮可能改动东西，只由人点`);
   } finally {
-    rmSync(state, { recursive: true, force: true });
+    state.remove();
   }
 }

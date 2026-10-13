@@ -1,0 +1,44 @@
+{
+  "name": "kimi",
+  "displayName": "Kimi Code",
+  "description": "Kimi Code Agent：Coda 的入口在运行机的 kimi acp 与 Coda 之间转发，读 Kimi 的会话文件报出后台命令与子 Agent；资源页的「Kimi」面板显示账号与额度，可从 Coda 安装和登录。",
+  "version": "1.0.0",
+  "contributes": {
+    "agents": [
+      {
+        "id": "kimi",
+        "displayName": "Kimi Code",
+        "icon": {
+          "light": "icons/kimi-light.pdf",
+          "dark": "icons/kimi-dark.pdf"
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "人工审批",
+          "auto": "auto",
+          "full": "yolo"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${KIMI_CODE_HOME:-~/.kimi-code}/config.toml"
+        ],
+        "setupHint": "请在「资源」里为运行机添加 Kimi。"
+      }
+    ],
+    "panels": [
+      {
+        "id": "account",
+        "title": "Kimi",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "maxAge": "PT5M",
+        "signIn": {
+          "command": "exec sh \"$CODA_PLUGIN_PATH/scripts/login.sh\"",
+          "installed": "test -x \"$HOME/.kimi-code/bin/kimi\" || command -v kimi >/dev/null",
+          "install": "exec sh \"$CODA_PLUGIN_PATH/scripts/install.sh\"",
+          "note": "登录保存在这台机器的 Kimi CLI 里，由它自己续期。"
+        }
+      }
+    ]
+  }
+}

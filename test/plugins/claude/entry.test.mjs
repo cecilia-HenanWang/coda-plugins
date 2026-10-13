@@ -1,0 +1,581 @@
+// From Coda's backend/test/claude-entry.test.mjs at ef1d2311, as plain node:test.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { ClaudeSession } from '../../../plugins/claude/agent/session.mjs';
+import { describeChange } from '../../../plugins/claude/agent/permissions.mjs';
+import { OTHER } from '../../../plugins/claude/agent/questions.mjs';
+import { nextRun } from '../../../plugins/claude/agent/waits.mjs';
+import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
+import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
+import { ClaudeSessionLimits } from '../../../plugins/claude/agent/limits.mjs';
+import { fixtureSdk, queries } from './fixture-sdk.mjs';
+
+// The Claude entry on its own (agents/claude/), Coda's side played here: what it is asked over ACP, and what it says.
+const entry = fileURLToPath(new URL('../../../plugins/claude/agent/entry.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./fixture-sdk.mjs', import.meta.url));
+async function until(fn) { for (let i = 0; i < 1000; i++) { const value = await fn(); if (value) return value; await delay(5); } throw new Error('Timed out'); }
+async function setup(t, { env = {}, sdk = fixtureSdk() } = {}) {
+  const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-entry-'));
+  const out = [], answered = new Set();
+  let inbox, next = 0;
+  const session = new ClaudeSession({ sdk, env: { ...process.env, ...env }, environment: value => ({ ...value }) });
+  session.connect({ readable: new ReadableStream({ start(controller) { inbox = controller; } }), writable: new WritableStream({ write(m) { out.push(m); } }) });
+  t.after(async () => { await session.close(); await rm(cwd, { recursive: true, force: true }); });
+  const send = message => inbox.enqueue({ jsonrpc: '2.0', ...message });
+  const request = (method, params) => { const id = `coda-${++next}`; send({ id, method, params }); return until(() => out.find(m => m.id === id && !m.method)); };
+  const c = { cwd, out, session, send, request,
+    open: async (params = {}) => {
+      await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+      const opened = (await request('session/new', { cwd, mcpServers: [], ...params })).result;
+      c.sessionId = opened.sessionId; c.query = queries.get(opened.sessionId);
+      return opened;
+    },
+    prompt: text => request('session/prompt', { sessionId: c.sessionId, prompt: [{ type: 'text', text }] }),
+    waits: () => out.filter(m => m.method === '_coda/wait').map(m => m.params),
+    updates: (sessionId = c.sessionId) => out.filter(m => m.method === 'session/update' && m.params.sessionId === sessionId).map(m => m.params.update),
+    said: (sessionId = c.sessionId) => c.updates(sessionId).filter(u => u.sessionUpdate === 'agent_message_chunk').map(u => u.content.text),
+    // What the SDK says, in its order, once what it has queued is through and all it brought is written.
+    emit: async (...messages) => { for (const message of messages) c.query.emit(message); await c.query.stop(undefined); await request('_test/written'); },
+    asked: method => until(() => out.findLast(m => m.method === method && m.id !== undefined && !answered.has(m.id))),
+    answer: (id, result) => { answered.add(id); send({ id, result }); } };
+  return c;
+}
+const system = (subtype, fields = {}) => ({ type: 'system', subtype, ...fields });
+const wait = (c, waitId) => c.waits().filter(w => w.waitId === waitId).map(({ sessionId: _, ...w }) => w);
+
+test('session/new lists the concrete models the SDK resolves its rows to, and settings go to the SDK as chosen', async t => {
+  const c = await setup(t);
+  const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
+  assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {} }, _meta: { coda: { waits: {} } } });
+  const opened = (await c.request('session/new', { cwd: c.cwd, mcpServers: [{ name: 'coda', command: 'node', args: ['shim.mjs'], env: [] }] })).result;
+  c.sessionId = opened.sessionId; c.query = queries.get(opened.sessionId);
+  const option = id => opened.configOptions.find(o => o.id === id);
+  // An alias and the model it resolves to are one model, under the ID it runs as; a context variant is another.
+  assert.deepEqual(option('model').options, [
+    { value: 'fixture-model-v1', name: 'Fixture model (fixture-model-v1)' }, { value: 'other-model', name: 'Other model (other-model)' },
+    { value: 'fixture-model-v1[1m]', name: 'Fixture long context (fixture-model-v1[1m])' }, { value: 'claude-custom-1', name: 'Custom (claude-custom-1)' }]);
+  assert.deepEqual([option('model').category, option('model').currentValue], ['model', 'fixture-model-v1']);
+  // Until one is chosen the model has its own, the choice marked as the agent's default.
+  assert.deepEqual([option('effort').category, option('effort').currentValue, option('effort').options.map(o => o.value)], ['thought_level', 'default', ['default', 'low', 'high']]);
+  assert.deepEqual(option('effort').options[0]._meta, { coda: { default: true } });
+  assert.deepEqual([option('mode').category, option('mode').currentValue], ['mode', 'default']);
+  assert.deepEqual(c.query.options.mcpServers, { coda: { command: 'node', args: ['shim.mjs'] } });
+  assert.equal(c.query.options.sessionId, c.sessionId);
+  assert.deepEqual(c.query.options.systemPrompt, { type: 'preset', preset: 'claude_code' });
+  assert.deepEqual(c.query.options.settings, { crossSessionInbound: 'refuse' });
+  assert.deepEqual([c.query.options.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, c.query.options.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH], ['1', '16384']);
+  const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value });
+  const changed = (await set('model', 'fixture-model-v1[1m]')).result.configOptions;
+  assert.equal(c.query.model, 'fixture-model-v1[1m]');
+  assert.deepEqual(changed.find(o => o.id === 'effort').options.map(o => o.value), ['default', 'high']);
+  assert.equal((await set('effort', 'low')).error.code, -32602, 'an effort the model does not have');
+  await set('effort', 'high'); assert.equal(c.query.effort, 'high');
+  const back = (await set('effort', 'default')).result.configOptions;
+  assert.deepEqual([c.query.effort, back.find(o => o.id === 'effort').currentValue], [null, 'default'], 'back to the model\'s own');
+  await set('effort', 'high');
+  await set('mode', 'plan'); assert.equal(c.query.mode, 'plan');
+  assert.equal((await set('model', 'fixture-alias')).error.code, -32602, 'an alias is not a model');
+  assert.equal((await set('mode', 'bypassPermissions')).error.code, -32602);
+  // The init of a turn says what runs: the variant chosen is kept for the model it is of.
+  await c.prompt('hello');
+  assert.equal(c.updates().findLast(u => u.sessionUpdate === 'config_option_update').configOptions.find(o => o.id === 'model').currentValue, 'fixture-model-v1[1m]');
+  assert.deepEqual(c.updates().findLast(u => u.sessionUpdate === 'available_commands_update').availableCommands, [{ name: 'fixture', description: 'Fixture command' }]);
+  assert.equal((await c.request('session/new', { cwd: c.cwd, mcpServers: [] })).error.code, -32600, 'one session a process');
+});
+
+test('session/load resumes the native session it names, and one that is not there is not found', async t => {
+  const c = await setup(t), first = await c.open();
+  await c.prompt('one');
+  const other = await setup(t);
+  await other.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.equal((await other.request('session/load', { sessionId: '00000000-0000-4000-8000-000000000000', cwd: c.cwd, mcpServers: [] })).error.code, -32002);
+  const again = await setup(t);
+  await again.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  const loaded = (await again.request('session/load', { sessionId: first.sessionId, cwd: c.cwd, mcpServers: [] })).result;
+  assert.ok(loaded.configOptions.length);
+  assert.equal(queries.get(first.sessionId).options.resume, first.sessionId);
+  again.sessionId = first.sessionId; again.query = queries.get(first.sessionId);
+  await again.prompt('history');
+  assert.deepEqual(again.said(), ['one|history']);
+});
+
+test('a prompt is answered by the result that names its input: ended, cancelled, or failed with what went wrong', async t => {
+  const c = await setup(t); await c.open();
+  assert.deepEqual((await c.prompt('hello')).result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.updates().find(u => u.sessionUpdate === 'usage_update'), { sessionUpdate: 'usage_update', used: 10, size: 1000, cost: { amount: 0, currency: 'USD' } });
+  const held = c.prompt('hold');
+  await until(() => c.said().includes('holding'));
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  assert.deepEqual((await held).result, { stopReason: 'cancelled' });
+  // A result of another input, or of none, does not answer this one; a failure that names no input fails every prompt.
+  const pending = c.prompt('delayed');
+  await until(() => c.query.inputId);
+  await c.emit({ type: 'result', subtype: 'success', is_error: false, user_message_uuid: 'another' });
+  await c.emit({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['认证失败'] });
+  const failed = await pending;
+  assert.deepEqual([failed.error.code, failed.error.message], [-32603, '认证失败']);
+});
+
+test('streamed text is said as it streams, and the complete message adds only what did not stream', async t => {
+  const c = await setup(t); await c.open();
+  const streaming = c.prompt('stream');
+  await until(() => c.said().join('') === 'first second');
+  await writeFile(join(c.cwd, '.finish-stream'), '');
+  await streaming;
+  assert.deepEqual(c.said(), ['first ', 'second']);
+  const ids = new Set(c.updates().filter(u => u.sessionUpdate === 'agent_message_chunk').map(u => u.messageId));
+  assert.equal(ids.size, 1, 'one message');
+  // A thought, a tool and its result, with the text of the message that called it.
+  await c.emit({ type: 'assistant', message: { id: 'm2', content: [{ type: 'thinking', thinking: '想一下' }] } },
+    { type: 'assistant', message: { id: 'm2', content: [{ type: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: '/x' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: '内容' }] }] }, tool_use_result: { file: '/x' } },
+    // A result for a call it never said is nobody's.
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'unknown', content: 'x' }] } });
+  assert.deepEqual(c.updates().slice(-3), [
+    { sessionUpdate: 'agent_thought_chunk', messageId: 'm2', content: { type: 'text', text: '想一下' } },
+    { sessionUpdate: 'tool_call', toolCallId: 'read-1', title: 'Read', rawInput: { file_path: '/x' }, status: 'in_progress' },
+    { sessionUpdate: 'tool_call_update', toolCallId: 'read-1', status: 'completed', rawOutput: { file: '/x' }, content: [{ type: 'content', content: { type: 'text', text: '内容' } }] }]);
+});
+
+test('a background command is waited on from its start; it ends as a turn takes in its end, or as the session goes idle', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('background');
+  assert.deepEqual(wait(c, 'bg-1'), [{ waitId: 'bg-1', state: 'waiting', kind: 'task', title: '后台测试', stoppable: true, toolCallId: 'tool-bg' }]);
+  // Where it writes, as its launch said.
+  await c.emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-bg', content: 'Output is being written to: /tmp/tasks/bg-1.output' }] } });
+  assert.deepEqual(wait(c, 'bg-1').at(-1), { waitId: 'bg-1', state: 'waiting', outputFile: '/tmp/tasks/bg-1.output' });
+  // Ended with no turn going: it will wake Claude, so it is still waited on.
+  await c.emit(system('task_notification', { task_id: 'bg-1', status: 'completed' }));
+  assert.equal(wait(c, 'bg-1').at(-1).state, 'waiting');
+  // Claude takes it up in a turn of its own: handled before anything said in it, and done when that turn ends.
+  await c.emit(system('init', { session_id: c.sessionId, model: 'fixture-model-v1', permissionMode: 'default' }));
+  await c.emit({ type: 'assistant', message: { id: 'woken', content: [{ type: 'text', text: '处理结果' }] } });
+  const order = c.out.filter(m => m.method === '_coda/wait' || m.params?.update?.sessionUpdate === 'agent_message_chunk').slice(-2);
+  assert.deepEqual(order.map(m => m.params.state ?? m.params.update.content.text), ['handling', '处理结果']);
+  await c.emit({ type: 'result', subtype: 'success', is_error: false });
+  assert.equal(wait(c, 'bg-1').at(-1).state, 'done');
+  // One that ends while a turn goes is taken in by it, and ends at once.
+  await c.prompt('background-second');
+  const held = c.prompt('hold');
+  await until(() => c.said().includes('holding'));
+  await c.emit(system('task_notification', { task_id: 'bg-2', status: 'failed' }));
+  assert.equal(wait(c, 'bg-2').at(-1).state, 'failed');
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } }); await held;
+  // One that ends after the turn, before an idle: not woken for, it ends as the session says idle.
+  await c.emit(system('task_started', { task_id: 'bg-3', task_type: 'local_bash', description: '三', is_backgrounded: true }),
+    system('task_notification', { task_id: 'bg-3', status: 'killed' }));
+  assert.equal(wait(c, 'bg-3').at(-1).state, 'waiting');
+  await c.emit(system('session_state_changed', { state: 'idle' }));
+  assert.equal(wait(c, 'bg-3').at(-1).state, 'cancelled');
+  // What leaves the list of background tasks has ended; ambient ones are not waited on.
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'bg-4', task_type: 'local_bash' }, { task_id: 'watch', task_type: 'monitor', ambient: true }] }));
+  assert.deepEqual(wait(c, 'watch'), []);
+  await c.emit(system('session_state_changed', { state: 'running' }), system('background_tasks_changed', { tasks: [] }), system('session_state_changed', { state: 'idle' }));
+  assert.equal(wait(c, 'bg-4').at(-1).state, 'done');
+});
+
+test('Coda stops a task through the SDK; the stop is confirmed by the task\'s own end', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('background');
+  assert.deepEqual((await c.request('_coda/wait/stop', { sessionId: c.sessionId, waitId: 'bg-1' })).result, {});
+  await until(() => wait(c, 'bg-1').some(w => w.state === 'cancelled'));
+  assert.equal((await c.request('_coda/wait/stop', { sessionId: c.sessionId, waitId: 'bg-1' })).error.code, -32602, 'nothing left to stop');
+  // One that ended and is yet to be taken in is not stopped again: it ends now, as it ended.
+  await c.emit(system('task_started', { task_id: 'bg-2', task_type: 'local_bash', is_backgrounded: true }), system('task_notification', { task_id: 'bg-2', status: 'failed' }));
+  assert.equal(wait(c, 'bg-2').at(-1).state, 'waiting');
+  assert.deepEqual((await c.request('_coda/wait/stop', { sessionId: c.sessionId, waitId: 'bg-2' })).result, {});
+  assert.equal(wait(c, 'bg-2').at(-1).state, 'failed');
+});
+
+test('a command in the foreground is its tool call, not a wait; put in the background, it is waited on', async t => {
+  const c = await setup(t); await c.open();
+  // A subagent in the background runs its commands while no turn goes: each ends with its call, none is left waited on.
+  await c.emit(system('task_started', { task_id: 'agent-1', tool_use_id: 'agent-call', task_type: 'local_agent', description: '查', is_backgrounded: true }));
+  for (const id of ['fg-1', 'fg-2'])
+    await c.emit(system('task_started', { task_id: id, tool_use_id: `${id}-call`, task_type: 'local_bash', description: id, is_backgrounded: false, parent_task_id: 'agent-1' }),
+      system('task_updated', { task_id: id, patch: { status: 'completed' } }), system('task_notification', { task_id: id, status: 'completed' }));
+  assert.deepEqual([...new Set(c.waits().map(w => w.waitId))], ['agent-1']);
+  // One past its timeout is put in the background, as begun there.
+  await c.emit(system('task_started', { task_id: 'fg-3', tool_use_id: 'fg-3-call', task_type: 'local_bash', description: 'build', is_backgrounded: false }),
+    system('task_updated', { task_id: 'fg-3', patch: { is_backgrounded: true } }));
+  assert.deepEqual(wait(c, 'fg-3'), [{ waitId: 'fg-3', state: 'waiting', kind: 'task', title: 'build', stoppable: true, toolCallId: 'fg-3-call' }]);
+  // The list of background tasks can say so first.
+  await c.emit(system('task_started', { task_id: 'fg-4', run_id: 'r4', tool_use_id: 'fg-4-call', task_type: 'local_bash', description: 'test', is_backgrounded: false }),
+    system('background_tasks_changed', { tasks: [{ task_id: 'fg-3', task_type: 'local_bash' }, { task_id: 'fg-4', run_id: 'r4', task_type: 'local_bash', description: 'test' }] }));
+  assert.deepEqual(wait(c, 'fg-4'), [{ waitId: 'fg-4', state: 'waiting', kind: 'task', title: 'test', stoppable: true, toolCallId: 'fg-4-call' }]);
+});
+
+test('a turn of Claude\'s own handles what its opening message names, else the one wakeup there is, else a wait of its own', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('scheduled');
+  assert.deepEqual(wait(c, 'cron-1')[0], { waitId: 'cron-1', state: 'waiting', kind: 'timer', title: 'fixture followup', detail: '47 11 23 9 *',
+    recurring: false, stoppable: false, at: new Date(nextRun('47 11 23 9 *')).toISOString() });
+  // Two commands end; the turn that follows says which woke it.
+  for (const [id, run] of [['bg-8', 'run-8'], ['bg-9', 'run-9']])
+    await c.emit(system('task_started', { task_id: id, run_id: run, task_type: 'local_bash', description: id, is_backgrounded: true }), system('task_notification', { task_id: id, status: 'completed' }));
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'user', message: { role: 'user', content: '<task-notification>' }, origin: { kind: 'task-notification', runId: 'run-9' } });
+  assert.deepEqual(['bg-8', 'bg-9'].map(id => wait(c, id).at(-1).state), ['waiting', 'handling'], 'the one it names is the one handled');
+  await c.emit({ type: 'result', subtype: 'success', is_error: false });
+  assert.deepEqual(['bg-8', 'bg-9'].map(id => wait(c, id).at(-1).state), ['waiting', 'done']);
+  await c.emit(system('session_state_changed', { state: 'idle' }));
+  // The only wakeup there is: handled, and the snapshot that removes it while it is handled ends it with the turn.
+  await c.emit(system('init', { session_id: c.sessionId }));
+  await c.emit({ type: 'assistant', message: { id: 'cron-turn', content: [{ type: 'text', text: '定时执行' }] } });
+  assert.equal(wait(c, 'cron-1').at(-1).state, 'handling');
+  await c.query.stop([]);
+  assert.equal(wait(c, 'cron-1').at(-1).state, 'handling');
+  await c.emit({ type: 'result', subtype: 'success', is_error: false });
+  assert.equal(wait(c, 'cron-1').at(-1).state, 'done');
+  // Nothing to say what woke it: a wait of the turn's own, which ends with it; a failure is said in the turn.
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['出错了'], uuid: 'r' });
+  const own = c.waits().filter(w => w.waitId.startsWith('turn-'));
+  assert.deepEqual(own.map(({ sessionId: _, ...w }) => w), [{ waitId: 'turn-1', state: 'handling', kind: 'task', title: 'Claude 自主继续', stoppable: false }, { waitId: 'turn-1', state: 'done' }]);
+  assert.equal(c.said().at(-1), '出错了');
+});
+
+test('what Claude asks in a turn of its own comes after what that turn handles, so that Coda takes it in that turn', async t => {
+  const c = await setup(t); await c.open();
+  await c.emit(system('init', { session_id: c.sessionId }));
+  const asking = c.query.options.canUseTool('Bash', { command: 'ls' }, { signal: new AbortController().signal, toolUseID: 'own-bash' });
+  const request = await c.asked('session/request_permission');
+  const said = c.out.filter(m => m.method === '_coda/wait' || m === request);
+  assert.deepEqual(said.map(m => m.params.state ?? m.method), ['handling', 'session/request_permission']);
+  c.answer(request.id, { outcome: { outcome: 'selected', optionId: 'deny' } });
+  assert.equal((await asking).behavior, 'deny');
+});
+
+test('a recurring wakeup that fires waits for its next time; several of which none is due make a turn of no known cause', async t => {
+  const c = await setup(t); await c.open();
+  // Neither is due now: the first of January.
+  await c.query.stop([{ id: 'hourly', schedule: '0 9 1 1 *', recurring: true, prompt: '看看 CI' }, { id: 'daily', schedule: '0 10 1 1 *', recurring: true, prompt: '日报' }]);
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'result', subtype: 'success', is_error: false });
+  assert.deepEqual(wait(c, 'turn-1').map(w => w.state), ['handling', 'done'], 'which of them fired is not told');
+  assert.deepEqual(['hourly', 'daily'].map(id => wait(c, id).length), [1, 1]);
+  // The one Claude says fired is handled, and waits again.
+  await c.emit(system('init', { session_id: c.sessionId }), { type: 'user', message: { role: 'user', content: '看看 CI' }, origin: { kind: 'task-notification', subkind: 'scheduled-trigger' } });
+  assert.equal(wait(c, 'hourly').at(-1).state, 'handling');
+  await c.emit({ type: 'result', subtype: 'success', is_error: false });
+  assert.equal(wait(c, 'hourly').at(-1).state, 'waiting');
+  assert.ok(Date.parse(wait(c, 'hourly').at(-1).at) > Date.now());
+  assert.equal(new Date(nextRun('0 * * * *', Date.parse('2026-10-12T10:30:00')) ).getMinutes(), 0);
+  assert.equal(nextRun('*/15 9-17 * * 1-5', Date.parse('2026-10-10T12:00:00')), Date.parse('2026-10-12T09:00:00'), 'a weekday schedule skips the weekend');
+  assert.equal(nextRun('0 0 31 2 *'), null, 'never');
+  assert.equal(nextRun('every hour'), null);
+});
+
+test('a subagent\'s session is its launching call: what it says before its task is kept for it, its model and continued runs are told', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  const child = 'agent-call';
+  await c.emit({ type: 'assistant', message: { id: 'launch', content: [{ type: 'tool_use', id: child, name: 'Agent', input: { description: '查环境', subagent_type: 'Explore' } }] } },
+    { type: 'assistant', parent_tool_use_id: child, message: { id: 'c1', model: 'child-model', content: [{ type: 'text', text: '子 Agent 第一句' }] } });
+  assert.deepEqual(c.updates(child), [], 'not before Coda knows the session');
+  await c.emit(system('task_started', { task_id: 'agent-1', tool_use_id: child, task_type: 'local_agent', description: '查环境', is_backgrounded: true }));
+  assert.deepEqual(wait(c, 'agent-1'), [{ waitId: 'agent-1', state: 'waiting', kind: 'subagent', title: '查环境', stoppable: true, childSessionId: child, toolCallId: child, model: 'child-model' }]);
+  assert.deepEqual(c.said(child), ['子 Agent 第一句']);
+  // Its permission requests are in its session.
+  const asking = c.query.options.canUseTool('Bash', { command: 'ls' }, { signal: new AbortController().signal, toolUseID: 'child-bash', agentID: 'agent-1', suggestions: [] });
+  const request = await c.asked('session/request_permission');
+  assert.equal(request.params.sessionId, child);
+  c.answer(request.id, { outcome: { outcome: 'selected', optionId: 'allow-once' } });
+  assert.deepEqual(await asking, { behavior: 'allow', updatedInput: { command: 'ls' } });
+  await c.emit({ type: 'stream_event', parent_tool_use_id: child, event: { type: 'message_start', message: { id: 'c2', model: 'next-model' } } });
+  assert.deepEqual(wait(c, 'agent-1').at(-1), { waitId: 'agent-1', state: 'waiting', model: 'next-model' });
+  // Ended in the turn; continued by another call it is a new run of the same session.
+  const held = c.prompt('hold'); await until(() => c.said().includes('holding'));
+  await c.emit(system('task_notification', { task_id: 'agent-1', status: 'completed' }));
+  await c.emit(system('task_started', { task_id: 'agent-1', tool_use_id: child, task_type: 'local_agent', description: '查环境' }));
+  assert.equal(wait(c, 'agent-1').at(-1).state, 'done', 'a repeated start of the same call revives nothing');
+  await c.emit(system('task_started', { task_id: 'agent-1', tool_use_id: 'send-call', task_type: 'local_agent', description: '修评审' }));
+  assert.deepEqual(wait(c, 'agent-1#2'), [{ waitId: 'agent-1#2', state: 'waiting', kind: 'subagent', title: '修评审', childSessionId: child, stoppable: true, model: 'next-model' }]);
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } }); await held;
+});
+
+test('a subagent listed and ended before its start is one run: its end waits for its session, and a start of that run begins none', async t => {
+  const c = await setup(t); await c.open();
+  const held = c.prompt('hold'); await until(() => c.said().includes('holding'));
+  const child = 'agent-call';
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'agent-1', run_id: 'r1', task_type: 'local_agent', description: '查环境' }] }),
+    { type: 'assistant', parent_tool_use_id: child, message: { id: 'c1', model: 'child-model', content: [{ type: 'text', text: '子 Agent 说完了' }] } },
+    system('task_notification', { task_id: 'agent-1', status: 'completed' }));
+  assert.equal(wait(c, 'agent-1').at(-1).state, 'waiting', 'not ended before its session is known');
+  await c.emit(system('task_started', { task_id: 'agent-1', run_id: 'r1', tool_use_id: child, task_type: 'local_agent', description: '查环境' }));
+  assert.deepEqual(wait(c, 'agent-1').slice(-2), [{ waitId: 'agent-1', state: 'waiting', childSessionId: child, toolCallId: child, model: 'child-model' },
+    { waitId: 'agent-1', state: 'done' }], 'the turn going takes in its end once its session is told');
+  assert.deepEqual(c.said(child), ['子 Agent 说完了']);
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } }); await held;
+  // Its start comes only after the turn took in its end: nothing begins, and what it said there is passed on.
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'agent-2', run_id: 'r2', task_type: 'local_agent', description: '查日志' }] }),
+    { type: 'assistant', parent_tool_use_id: 'late-call', message: { id: 'c2', content: [{ type: 'text', text: '迟到的身份' }] } },
+    system('task_notification', { task_id: 'agent-2', status: 'completed' }), system('session_state_changed', { state: 'idle' }));
+  assert.equal(wait(c, 'agent-2').at(-1).state, 'done', 'with no turn to take it in, the idle session ends it');
+  await c.emit(system('task_started', { task_id: 'agent-2', run_id: 'r2', tool_use_id: 'late-call', task_type: 'local_agent', description: '查日志' }));
+  assert.deepEqual([wait(c, 'agent-2').at(-1).state, c.waits().filter(w => w.waitId.startsWith('agent-1#') || w.waitId.startsWith('agent-2#'))], ['done', []]);
+  assert.deepEqual(c.said('late-call'), ['迟到的身份']);
+});
+
+test('all a subagent says before its task is kept for it, however much: its text whole and once, its tools as they went', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  const child = 'agent-call', pieces = Array.from({ length: 600 }, (_, i) => String(i % 10)), stream = event => ({ type: 'stream_event', parent_tool_use_id: child, event });
+  await c.emit(stream({ type: 'message_start', message: { id: 'c1', model: 'child-model' } }),
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    ...pieces.map(text => stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })),
+    { type: 'assistant', parent_tool_use_id: child, message: { id: 'c1', model: 'child-model', content: [{ type: 'text', text: pieces.join('') }] } },
+    { type: 'assistant', parent_tool_use_id: child, message: { id: 'c1', model: 'child-model', content: [{ type: 'tool_use', id: 'child-tool', name: 'Bash', input: { command: 'ls' } }] } },
+    { type: 'user', parent_tool_use_id: child, message: { content: [{ type: 'tool_result', tool_use_id: 'child-tool', content: 'done' }] } });
+  await c.emit(system('task_started', { task_id: 'agent-1', tool_use_id: child, task_type: 'local_agent', description: '查环境' }));
+  assert.equal(c.said(child).join(''), pieces.join(''));
+  assert.deepEqual(c.updates(child).filter(u => u.toolCallId === 'child-tool').map(u => [u.sessionUpdate, u.status]), [['tool_call', 'in_progress'], ['tool_call_update', 'completed']]);
+});
+
+test('a subagent listed before its start is told its launching call\'s session once the start says it, and what it said there goes with it', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  const child = 'agent-call';
+  // The snapshot names no tool call: the subagent is waited on, its session not yet known.
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'agent-1', run_id: 'r1', task_type: 'local_agent', description: '查环境' }] }),
+    { type: 'assistant', parent_tool_use_id: child, message: { id: 'c1', model: 'child-model', content: [{ type: 'text', text: '子 Agent 第一句' }] } });
+  assert.deepEqual(c.updates(child), []);
+  await c.emit(system('task_started', { task_id: 'agent-1', run_id: 'r1', tool_use_id: child, task_type: 'local_agent', description: '查环境', is_backgrounded: true }));
+  assert.deepEqual(wait(c, 'agent-1').at(-1), { waitId: 'agent-1', state: 'waiting', childSessionId: child, toolCallId: child, model: 'child-model' });
+  assert.deepEqual(c.said(child), ['子 Agent 第一句']);
+  const asking = c.query.options.canUseTool('Bash', { command: 'ls' }, { signal: new AbortController().signal, toolUseID: 'child-bash', agentID: 'agent-1', suggestions: [] });
+  const request = await c.asked('session/request_permission');
+  assert.equal(request.params.sessionId, child, 'its requests are in its session');
+  c.answer(request.id, { outcome: { outcome: 'selected', optionId: 'allow-once' } });
+  await asking;
+  // A command listed first gets its launching call the same way.
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'agent-1', run_id: 'r1', task_type: 'local_agent', description: '查环境' },
+    { task_id: 'bg-1', run_id: 'r2', task_type: 'local_bash', description: 'sleep' }] }));
+  await c.emit(system('task_started', { task_id: 'bg-1', run_id: 'r2', tool_use_id: 'bash-call', task_type: 'local_bash', description: 'sleep' }));
+  assert.deepEqual(wait(c, 'bg-1').at(-1), { waitId: 'bg-1', state: 'waiting', toolCallId: 'bash-call' });
+});
+
+test('approvals offer allow once, each suggested rule by its whole sentence, and deny; a withdrawn one is withdrawn from Coda too', async t => {
+  const c = await setup(t); await c.open();
+  const reading = { type: 'addRules', destination: 'session', behavior: 'allow', rules: [{ toolName: 'Read', ruleContent: `/${homedir()}/.local/**` }] };
+  const suggestions = [{ type: 'addRules', destination: 'localSettings', behavior: 'allow', rules: [{ toolName: 'Bash', ruleContent: 'ls x' }] },
+    { type: 'addDirectories', destination: 'session', directories: ['/opt/skills'] }, reading, reading,
+    { type: 'addRules', destination: 'session', behavior: 'allow', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }] },
+    { type: 'replaceRules', destination: 'userSettings', behavior: 'allow', rules: [{ toolName: 'WebFetch', ruleContent: 'domain:example.com' }] }];
+  const asking = c.query.options.canUseTool('Bash', { command: 'ls x' }, { signal: new AbortController().signal, toolUseID: 'bash-1', decisionReason: 'outside cwd', suggestions });
+  const request = await c.asked('session/request_permission');
+  assert.deepEqual(request.params.options, [{ optionId: 'allow-once', name: '仅允许本次', kind: 'allow_once' },
+    { optionId: 'suggestion-0', name: '允许这条完全相同的命令（本项目 · 本机）', kind: 'allow_always' },
+    { optionId: 'suggestion-1', name: '允许访问目录 /opt/skills（本会话）', kind: 'allow_always' },
+    { optionId: 'suggestion-2', name: '允许读取 ~/.local/**（本会话）', kind: 'allow_always' },
+    { optionId: 'suggestion-3', name: '允许以此开头的命令 npm test（本会话）', kind: 'allow_always' },
+    { optionId: 'suggestion-4', name: '替换现有规则为：允许访问 example.com（所有项目）', kind: 'allow_always' },
+    { optionId: 'deny', name: '拒绝', kind: 'reject_once' }]);
+  assert.deepEqual(request.params.toolCall, { toolCallId: 'bash-1', title: 'Bash', rawInput: { command: 'ls x' }, status: 'pending',
+    content: [{ type: 'content', content: { type: 'text', text: 'outside cwd' } }] });
+  c.answer(request.id, { outcome: { outcome: 'selected', optionId: 'suggestion-3' } });
+  assert.deepEqual(await asking, { behavior: 'allow', updatedInput: { command: 'ls x' }, updatedPermissions: [suggestions[4]] });
+  assert.equal(describeChange({ type: 'setMode', mode: 'acceptEdits', destination: 'session' }), '切换为「自动允许修改文件」模式（本会话）');
+  // An option never offered, and a refusal, deny.
+  const invented = c.query.options.canUseTool('Bash', {}, { signal: new AbortController().signal, toolUseID: 'bash-2' });
+  c.answer((await c.asked('session/request_permission')).id, { outcome: { outcome: 'selected', optionId: 'suggestion-9' } });
+  assert.equal((await invented).behavior, 'deny');
+  // The SDK stops waiting (the turn was interrupted): Coda is told to stop asking, and the SDK is answered at once.
+  const controller = new AbortController();
+  const withdrawn = c.query.options.canUseTool('Bash', {}, { signal: controller.signal, toolUseID: 'bash-3' });
+  const pending = await c.asked('session/request_permission');
+  controller.abort();
+  assert.equal((await withdrawn).behavior, 'deny');
+  await until(() => c.out.some(m => m.method === '$/cancel_request' && m.params.requestId === pending.id));
+});
+
+test('Claude\'s questions are a plain form: a choice per question, one of them the answer written beside it', async t => {
+  const c = await setup(t); await c.open();
+  const input = { questions: [{ question: '选一个', header: '方式', options: [{ label: 'A', description: '第一种' }, { label: 'B' }], multiSelect: false },
+    { question: '选多个', options: [{ label: 'X' }, { label: 'Y' }], multiSelect: true }] };
+  const asking = c.query.options.canUseTool('AskUserQuestion', input, { signal: new AbortController().signal, toolUseID: 'ask-1' });
+  const request = await c.asked('elicitation/create');
+  const choices = [{ const: 'A', title: 'A — 第一种' }, { const: 'B', title: 'B' }, { const: OTHER, title: '其他（写在下面）' }];
+  assert.deepEqual(request.params, { sessionId: c.sessionId, toolCallId: 'ask-1', mode: 'form', message: 'Claude 需要你的回答', requestedSchema: { type: 'object', properties: {
+    q0: { title: '选一个', description: '方式', type: 'string', oneOf: choices }, q0_other: { type: 'string', title: '其他' },
+    q1: { title: '选多个', description: '', type: 'array', items: { anyOf: [{ const: 'X', title: 'X' }, { const: 'Y', title: 'Y' }, { const: OTHER, title: '其他（写在下面）' }] }, minItems: 1 },
+    q1_other: { type: 'string', title: '其他' } }, required: ['q0', 'q1'] } });
+  c.answer(request.id, { action: 'accept', content: { q0: OTHER, q0_other: 'C', q1: ['X', OTHER], q1_other: 'Z' } });
+  assert.deepEqual((await asking).updatedInput.answers, { 选一个: 'C', 选多个: 'X, Z' });
+  const declined = c.query.options.canUseTool('AskUserQuestion', input, { signal: new AbortController().signal, toolUseID: 'ask-2' });
+  c.answer((await c.asked('elicitation/create')).id, { action: 'decline' });
+  assert.equal((await declined).behavior, 'deny');
+});
+
+test('an MCP server\'s form passes as it is, and its link is a link', async t => {
+  const c = await setup(t); await c.open();
+  for (const text of ['form', 'url']) {
+    const prompt = c.prompt(text), request = await c.asked('elicitation/create');
+    if (text === 'url') assert.deepEqual(request.params, { sessionId: c.sessionId, mode: 'url', message: '登录后确认', url: 'https://example.com/authorize', elicitationId: 'url-1' });
+    else assert.deepEqual(request.params.requestedSchema.required, ['n']);
+    c.answer(request.id, text === 'url' ? { action: 'accept' } : { action: 'accept', content: { n: 3 } });
+    await prompt;
+  }
+  assert.deepEqual(c.said().map(JSON.parse), [{ action: 'accept', content: { n: 3 } }, { action: 'accept' }]);
+});
+
+test('the plan windows a session reports go to the limits file in the plugin\'s state, merged with what is there; nothing is said to Coda', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'coda-claude-limits-')), path = join(dir, 'limits.json');
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path, JSON.stringify({ version: 1, windows: { seven_day_opus: { utilization: 0.5, resetsAt: 4102444800 } } }));
+  const c = await setup(t, { env: { CODA_PLUGIN_STATE: dir } }); await c.open();
+  const before = c.out.length;
+  await c.prompt('rate-limit');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).windows, { seven_day_opus: { utilization: 0.5, resetsAt: 4102444800 },
+    five_hour: { utilization: 0.11, resetsAt: 4102444800 - 86400 }, seven_day: { utilization: 0.91, resetsAt: 4102444800 } });
+  assert.ok(!c.out.slice(before).some(m => JSON.stringify(m).includes('rate_limit')));
+  assert.equal(new ClaudeSessionLimits({ path, now: () => 0 }).quota().length, 3);
+});
+
+test('the entry speaks ACP over standard input and output with the SDK it is given, and ends with its input or a signal', { timeout: 20000 }, async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-stdio-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const run = () => {
+    const child = spawn(process.execPath, [entry], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CODA_CLAUDE_SDK_ENTRY: fixture } });
+    t.after(() => child.kill());
+    const messages = [], pending = new Map(); let stderr = '', next = 0;
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    createInterface({ input: child.stdout }).on('line', line => {
+      const message = JSON.parse(line); messages.push(message);
+      if (message.id !== undefined && !message.method) { pending.get(message.id)?.(message); pending.delete(message.id); }
+      if (message.method === 'session/request_permission') child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { outcome: { outcome: 'selected', optionId: 'allow-once' } } }) + '\n');
+    });
+    const request = (method, params) => new Promise(resolve => { const id = ++next; pending.set(id, resolve); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
+    return { child, messages, request, exit: once(child, 'exit'), stderr: () => stderr };
+  };
+  const p = run();
+  assert.equal((await p.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result.agentCapabilities.loadSession, true);
+  const { sessionId } = (await p.request('session/new', { cwd, mcpServers: [] })).result;
+  // A request Coda answers while the prompt it is part of runs.
+  assert.deepEqual((await p.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'permission' }] })).result, { stopReason: 'end_turn' });
+  assert.ok(p.messages.some(m => m.params?.update?.content?.text?.includes('"behavior":"allow"')));
+  p.child.stdin.end();
+  assert.deepEqual(await p.exit, [0, null]); assert.equal(p.stderr(), '');
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+    const q = run();
+    await q.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    q.child.kill(signal);
+    assert.deepEqual(await q.exit, [0, null]); assert.equal(q.stderr(), '');
+  }
+});
+
+test('without a token file the SDK receives the user\'s existing authentication unchanged', async () => {
+  const env = { HOME: '/tmp/new-coda-user', ANTHROPIC_API_KEY: 'test-only', CLAUDE_CODE_USE_VERTEX: '1' };
+  assert.deepEqual(await sdkEnvironment(env), env);
+  assert.notEqual(await sdkEnvironment(env), env);
+});
+
+test('a token file is confined to the SDK\'s environment and supersedes conflicting credentials', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'sdk-auth-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'token'), token = 'sk-ant-oat01-test-only';
+  await writeFile(path, token + '\n', { mode: 0o600 });
+  const env = { CODA_CLAUDE_OAUTH_TOKEN_FILE: path, PATH: '/example',
+    ANTHROPIC_API_KEY: 'api', ANTHROPIC_AUTH_TOKEN: 'bearer', ANTHROPIC_BASE_URL: 'https://invalid', ANTHROPIC_CUSTOM_HEADERS: 'Authorization: stale',
+    CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', CLAUDE_CODE_USE_FOUNDRY: '1',
+    CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh', CLAUDE_CODE_OAUTH_SCOPES: 'old', CLAUDE_CODE_OAUTH_TOKEN: 'stale' };
+  assert.deepEqual(await sdkEnvironment(env), { CODA_CLAUDE_OAUTH_TOKEN_FILE: path, PATH: '/example', CLAUDE_CODE_OAUTH_TOKEN: token });
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'stale');
+  await writeFile(path, 'sk-ant-oat01-replacement');
+  assert.equal((await sdkEnvironment(env)).CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-replacement');
+  // The session starts its SDK with it, and a token file it cannot use stops the start.
+  const c = await setup(t, { sdk: fixtureSdk() });
+  c.session.environment = sdkEnvironment; c.session.env = { ...process.env, CODA_CLAUDE_OAUTH_TOKEN_FILE: path };
+  await c.open();
+  assert.equal(c.query.options.env.CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-replacement');
+  const broken = await setup(t);
+  broken.session.environment = sdkEnvironment; broken.session.env = { CODA_CLAUDE_OAUTH_TOKEN_FILE: 'relative' };
+  await broken.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.match((await broken.request('session/new', { cwd: broken.cwd, mcpServers: [] })).error.message, /must be absolute/);
+});
+
+test('unsafe or malformed token files fail closed without echoing secrets', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'sdk-auth-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'token');
+  const load = value => sdkEnvironment({ CODA_CLAUDE_OAUTH_TOKEN_FILE: value });
+  await assert.rejects(load('relative'), /must be absolute/);
+  await assert.rejects(load(path), /cannot read/);
+  await assert.rejects(load(dir), /regular file/);
+  await writeFile(path, 'sk-ant-oat01-secret', { mode: 0o644 });
+  await assert.rejects(load(path), /mode 0600/);
+  await chmod(path, 0o600);
+  await symlink(path, join(dir, 'link'));
+  await assert.rejects(load(join(dir, 'link')), /cannot read/);
+  for (const invalid of ['', 'sk-ant-oat01-secret\nsecond-secret', ' sk-ant-oat01-secret', 'x'.repeat(8193), 'sk-ant-api03-secret']) {
+    await writeFile(path, invalid);
+    await assert.rejects(load(path), error => {
+      assert.equal(error.message, 'Claude SDK setup token: file must contain one subscription OAuth token');
+      return true;
+    });
+  }
+});
+
+function titles() {
+  let info = {}, alive = true;
+  const published = [], generated = [], renamed = [];
+  const sdk = { async getSessionInfo() { return info; }, async renameSession(id, title, options) { renamed.push({ id, title, options }); info = { customTitle: title }; } };
+  const query = { async generateSessionTitle(context, options) { generated.push({ context, options }); return '修复空白思考'; } };
+  const title = new SessionTitle({ sdk, query, cwd: '/project', sessionId: 'session', alive: () => alive, publish: async value => published.push(value) });
+  return { title, query, published, generated, renamed, setInfo: value => { info = value; }, close: () => { alive = false; } };
+}
+
+test('a title is generated once, even after its publication failed, and one the session has survives resume', async () => {
+  const c = titles(); c.title.append('请修复界面上空白的思考消息。');
+  let fail = true;
+  c.title.publish = async title => { if (fail) { fail = false; throw new Error('temporary notification failure'); } c.published.push(title); };
+  await Promise.all([c.title.refresh(), c.title.refresh(true)]);
+  assert.deepEqual(c.published, []);
+  await c.title.refresh(true);
+  assert.deepEqual(c.published, ['修复空白思考']);
+  assert.deepEqual(c.generated[0].options, { persist: false });
+  assert.deepEqual(c.renamed.map(value => value.id), ['session']);
+  c.title.append('another prompt'); await c.title.refresh(true);
+  assert.equal(c.generated.length, 1); assert.equal(c.published.length, 1);
+  const resumed = titles(); resumed.setInfo({ customTitle: '用户起的标题', summary: '原始输入' });
+  resumed.title.append('enough context for a title'); await resumed.title.refresh(true);
+  assert.deepEqual(resumed.published, ['用户起的标题']); assert.equal(resumed.generated.length, 0);
+});
+
+test('a failed title is tried again; a rename and the session\'s end beat a title still being generated; context is bounded', async () => {
+  const c = titles(); c.title.append('enough context for a useful title');
+  c.query.generateSessionTitle = async () => { throw new Error('temporary failure'); };
+  await c.title.refresh(true); assert.equal(c.published.length, 0);
+  c.query.generateSessionTitle = async () => { c.setInfo({ customTitle: '手动重命名' }); return '过时的生成标题'; };
+  await c.title.refresh(true);
+  assert.deepEqual(c.published, ['手动重命名']); assert.equal(c.renamed.length, 0);
+  const closed = titles(); closed.title.append('enough context for a useful title');
+  closed.query.generateSessionTitle = async () => { closed.close(); return 'too late'; };
+  await closed.title.refresh(true);
+  assert.equal(closed.published.length, 0); assert.equal(closed.renamed.length, 0);
+  const long = titles(); long.title.append('x'.repeat(100_000));
+  const bounded = long.title.context.length;
+  long.title.append('newest prompt');
+  assert.equal(long.title.context.length, bounded); assert.ok(long.title.context.endsWith('newest prompt'));
+});
+
+test('the session publishes its title as session info, and a stopped turn starts no title generation', async t => {
+  let stored = null, calls = 0, release;
+  const sdk = fixtureSdk(), make = sdk.query;
+  sdk.getSessionInfo = async () => ({ customTitle: stored });
+  sdk.renameSession = async (_id, title) => { stored = title; };
+  sdk.query = options => Object.assign(make(options), { generateSessionTitle: () => { calls++; return new Promise(resolve => { release = resolve; }); } });
+  const c = await setup(t, { sdk }); await c.open();
+  const held = c.prompt('hold'); await until(() => c.said().includes('holding'));
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } }); await held;
+  await delay(20); assert.equal(calls, 0);
+  await c.prompt('Please fix the empty thinking messages');
+  await until(() => release); release('隐藏空白思考');
+  const info = await until(() => c.updates().find(u => u.sessionUpdate === 'session_info_update'));
+  assert.deepEqual(info, { sessionUpdate: 'session_info_update', title: '隐藏空白思考' });
+});

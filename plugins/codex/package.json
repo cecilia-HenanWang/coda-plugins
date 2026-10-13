@@ -1,0 +1,63 @@
+{
+  "name": "codex",
+  "displayName": "Codex",
+  "description": "Codex Agent：Coda 自带的入口在同一进程里运行锁定版本的 codex-acp，把子 Agent 与后台命令报成等待项；资源页的「Codex」面板显示本机登录的额度，可从 Coda 登录、使用完全重置。",
+  "version": "1.0.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.12.0",
+    "@openai/codex": "0.159.2"
+  },
+  "overrides": {
+    "@agentclientprotocol/codex-acp": {
+      "@openai/codex": "$@openai/codex"
+    }
+  },
+  "contributes": {
+    "agents": [
+      {
+        "id": "codex",
+        "displayName": "Codex",
+        "icon": {
+          "light": "icons/openai.pdf",
+          "template": true
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "人工审批",
+          "auto": "agent",
+          "full": "agent-full-access"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${CODEX_HOME:-~/.codex}/config.toml",
+          ".codex/config.toml"
+        ],
+        "setupHint": "请在运行机为后端所属账号完成 Codex 认证。"
+      }
+    ],
+    "panels": [
+      {
+        "id": "login",
+        "title": "Codex",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "maxAge": "PT5M",
+        "actions": {
+          "reset": {
+            "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
+            "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
+          }
+        },
+        "signIn": {
+          "command": "NO_COLOR=1 exec node \"$CODA_CODEX_ENTRY\" login --device-auth",
+          "note": "登录保存在这台机器的 Codex 里，由 Codex 自己续期。"
+        }
+      }
+    ],
+    "extensionPoints": {
+      "account-source": {
+        "description": "Codex 用哪个账号：当前选的是谁、给出它的令牌。没有插件接上时用这台机器上 Codex 自己的登录。"
+      }
+    }
+  }
+}

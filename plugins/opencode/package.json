@@ -1,0 +1,34 @@
+{
+  "name": "opencode",
+  "displayName": "OpenCode",
+  "description": "OpenCode Agent：运行机上已安装并登录的 opencode acp。",
+  "version": "1.0.0",
+  "contributes": {
+    "agents": [
+      {
+        "id": "opencode",
+        "displayName": "OpenCode",
+        "icon": {
+          "light": "icons/opencode-light.pdf",
+          "dark": "icons/opencode-dark.pdf"
+        },
+        "command": "exec opencode acp",
+        "modes": {
+          "title": "工作模式",
+          "unset": "Agent 默认",
+          "note": "工具权限沿用运行机的 OpenCode 配置。"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${OPENCODE_CONFIG}",
+          "${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json",
+          "${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.jsonc",
+          "${XDG_CONFIG_HOME:-~/.config}/opencode/config.json",
+          "opencode.json",
+          "opencode.jsonc"
+        ],
+        "setupHint": "请在运行机安装并登录 OpenCode，确认后端能执行 opencode acp。"
+      }
+    ]
+  }
+}

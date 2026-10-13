@@ -1,0 +1,32 @@
+{
+  "name": "codex-accounts",
+  "displayName": "Codex 多账号",
+  "description": "让 Codex 使用 codex-account 管理器里的账号：资源页的「Codex 多账号」面板列出每个账号的额度，可切换使用、使用完全重置；会话在开始时和两轮之间换到所选的账号。读管理器需要 Python 3。",
+  "version": "1.0.0",
+  "extensionDependencies": ["codex"],
+  "dependencies": {
+    "@openai/codex": "0.159.2"
+  },
+  "contributes": {
+    "extensions": {
+      "codex/account-source": {
+        "command": "exec node \"$CODA_PLUGIN_PATH/scripts/source.mjs\""
+      }
+    },
+    "panels": [
+      {
+        "id": "accounts",
+        "title": "Codex 多账号",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "maxAge": "PT5M",
+        "actions": {
+          "select": { "command": "node \"$CODA_PLUGIN_PATH/scripts/select.mjs\"" },
+          "reset": {
+            "command": "node \"$CODA_PLUGIN_PATH/scripts/reset.mjs\"",
+            "confirm": "使用一次完全重置？\n用最早到期的那一次。成功后消耗 1 次，无法撤销。"
+          }
+        }
+      }
+    ]
+  }
+}
