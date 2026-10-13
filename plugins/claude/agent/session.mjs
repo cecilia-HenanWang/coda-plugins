@@ -47,7 +47,7 @@ export class ClaudeSession {
     this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null };
     // Streamed text by API message, so that the complete message adds only what was not streamed; tool calls said.
     this.streams = new Map(); this.streamed = new Map(); this.tools = new Set(); this.children = new Set(); this.early = new Map(); this.compaction = null;
-    this.waits = new ClaudeWaits({ say: params => this.notify('_coda/wait', { sessionId: this.sessionId, ...params }),
+    this.waits = new ClaudeWaits({ say: (params, sessionId = this.sessionId) => this.notify('_coda/wait', { sessionId, ...params }),
       going: () => this.prompts.size > 0 || this.waits.handling, registered: sessionId => this.registered(sessionId) });
   }
   connect(stream) {

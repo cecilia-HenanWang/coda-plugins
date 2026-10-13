@@ -1,6 +1,7 @@
 // What Claude Code keeps going beside a turn, told to Coda as waits of its own (docs/agent-protocol.md「_coda/wait」): its
 // background tasks and subagents as the SDK reports them, and the wakeups it scheduled as its Stop hook lists them. A
 // subagent's session is the tool call that launched it; continued (SendMessage), it is another run under the same session.
+// What a subagent launches (`parent_task_id`) is told in that subagent's session, once a wait has told Coda that session.
 // A task that ends while no turn goes will wake Claude for its result: until a turn takes it up, or the session says idle,
 // it is still waited on. A turn Claude begins on its own handles what woke it (`takeUp`): what its opening message names,
 // else the tasks that ended, else the one wakeup due, else a wait of the turn's own; what it handles ends with that turn.
@@ -9,7 +10,8 @@ const open = state => state === 'waiting' || state === 'handling';
 const cut = (value, limit) => typeof value === 'string' && value ? value.slice(0, limit) : undefined;
 
 export class ClaudeWaits {
-  // `say`: a wait's report, without its session; `going`: whether a turn goes; `registered`: a subagent's session is known.
+  // `say`: a wait's report, and its session when that is a subagent's; `going`: whether a turn goes; `registered`: a subagent's
+  // session is known.
   constructor({ say, going = () => false, registered = () => {}, now = Date.now }) {
     this.say = say; this.going = going; this.registered = registered; this.now = now;
     this.tasks = new Map(); this.crons = new Map(); this.own = new Set(); this.turns = 0;
@@ -21,7 +23,9 @@ export class ClaudeWaits {
   get handling() { return this.own.size > 0 || [...this.tasks.values(), ...this.crons.values()].some(w => w.state === 'handling'); }
   report(wait, state, fields = {}) {
     wait.state = state;
-    this.say({ waitId: wait.waitId, state, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) });
+    const params = { waitId: wait.waitId, state, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };
+    // Kept while the session it is in is not yet told (`named`).
+    if (wait.held) wait.held.push(params); else this.say(params, wait.sessionId);
   }
   // A task begun (`task_started`, `start`), or listed among those in the background (`listed`).
   started(native, { start = false, listed = false } = {}) {
@@ -41,9 +45,9 @@ export class ClaudeWaits {
       if (start && sameRun && !known.toolUseId && native.tool_use_id) {
         const toolUseId = cut(native.tool_use_id, 200), subagent = known.kind === 'subagent';
         Object.assign(known, { toolUseId, runId: known.runId ?? native.run_id }, subagent ? { childSessionId: toolUseId } : {});
-        if (open(known.state)) this.report(known, known.state, { childSessionId: subagent ? toolUseId : undefined, toolCallId: native.parent_task_id ? undefined : toolUseId,
+        if (open(known.state)) this.report(known, known.state, { childSessionId: subagent ? toolUseId : undefined, toolCallId: toolUseId,
           outputFile: subagent ? undefined : this.outputs.get(toolUseId), model: subagent ? this.models.get(toolUseId) : undefined });
-        if (subagent) this.registered(toolUseId);
+        if (subagent && !known.held) this.named(known);
         // An end held for its session is told now while a turn goes, which takes it in.
         if (known.final !== undefined && known.state === 'waiting' && this.going()) { this.report(known, known.final); known.final = undefined; }
         return;
@@ -60,12 +64,28 @@ export class ClaudeWaits {
     }
     const subagent = native.task_type === 'local_agent', toolUseId = cut(native.tool_use_id, 200);
     const task = { taskId: native.task_id, waitId: native.task_id.slice(0, 200), run: 1, kind: subagent ? 'subagent' : 'task', toolUseId, runId: native.run_id,
-      listed: listed || native.is_backgrounded === true, ...(subagent ? { childSessionId: toolUseId ?? native.task_id.slice(0, 200) } : {}) };
+      listed: listed || native.is_backgrounded === true, parentTaskId: native.parent_task_id, ...(subagent ? { childSessionId: toolUseId ?? native.task_id.slice(0, 200) } : {}) };
+    if (task.parentTaskId) {
+      const parent = this.tasks.get(task.parentTaskId);
+      if (parent?.toolUseId && !parent.held) task.sessionId = parent.childSessionId; else task.held = [];
+    }
     this.tasks.set(task.taskId, task);
     this.report(task, 'waiting', { kind: task.kind, title: cut(native.description, 500) ?? (subagent ? '子 Agent' : '后台任务'), stoppable: true,
-      childSessionId: task.childSessionId, toolCallId: native.parent_task_id ? undefined : toolUseId, outputFile: this.outputs.get(toolUseId),
+      childSessionId: task.childSessionId, toolCallId: toolUseId, outputFile: this.outputs.get(toolUseId),
       model: subagent ? this.models.get(task.childSessionId) : undefined });
-    if (subagent) this.registered(task.childSessionId);
+    if (subagent && !task.held) this.named(task);
+  }
+  // A subagent's session told to Coda: what it said there comes after, and what it launched is told there, held reports first.
+  named(subagent) {
+    this.registered(subagent.childSessionId);
+    if (!subagent.toolUseId) return;
+    for (const task of this.tasks.values()) {
+      if (!task.held || task.parentTaskId !== subagent.taskId) continue;
+      const held = task.held;
+      task.held = undefined; task.sessionId = subagent.childSessionId;
+      for (const params of held) this.say(params, task.sessionId);
+      if (task.kind === 'subagent') this.named(task);
+    }
   }
   // A command in the foreground put in the background: from now on it is waited on, as begun there.
   backgrounded(taskId) {

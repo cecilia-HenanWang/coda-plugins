@@ -361,6 +361,45 @@ test('a subagent listed before its start is told its launching call\'s session o
   assert.deepEqual(wait(c, 'bg-1').at(-1), { waitId: 'bg-1', state: 'waiting', toolCallId: 'bash-call' });
 });
 
+test('what a subagent launches is told in its session, once a wait has told Coda that session: what it said before goes first', async t => {
+  const c = await setup(t); await c.open();
+  await c.prompt('hello');
+  const sessions = waitId => c.waits().filter(w => w.waitId === waitId).map(w => w.sessionId);
+  const at = (waitId, fields = {}) => c.out.findIndex(m => m.method === '_coda/wait' && m.params.waitId === waitId && Object.entries(fields).every(([k, v]) => m.params[k] === v));
+  // A command its subagent launched while that subagent is listed with no launching call, and one whose subagent is not yet known.
+  await c.emit(system('background_tasks_changed', { tasks: [{ task_id: 'agent-1', run_id: 'r1', task_type: 'local_agent', description: '查环境' }] }),
+    system('task_started', { task_id: 'bg-1', tool_use_id: 'bash-1', task_type: 'local_bash', description: 'sleep', is_backgrounded: true, parent_task_id: 'agent-1' }),
+    system('task_updated', { task_id: 'bg-1', patch: { description: 'sleep 60' } }),
+    system('task_started', { task_id: 'bg-2', tool_use_id: 'bash-2', task_type: 'local_bash', description: 'tail', is_backgrounded: true, parent_task_id: 'agent-2' }));
+  assert.deepEqual([wait(c, 'bg-1'), wait(c, 'bg-2')], [[], []], 'not before Coda knows the session');
+  await c.emit(system('task_started', { task_id: 'agent-1', run_id: 'r1', tool_use_id: 'agent-call', task_type: 'local_agent', description: '查环境', is_backgrounded: true }));
+  assert.deepEqual(wait(c, 'bg-1'), [{ waitId: 'bg-1', state: 'waiting', kind: 'task', title: 'sleep', stoppable: true, toolCallId: 'bash-1' },
+    { waitId: 'bg-1', state: 'waiting', title: 'sleep 60' }]);
+  assert.deepEqual(sessions('bg-1'), ['agent-call', 'agent-call']);
+  assert.ok(at('agent-1', { childSessionId: 'agent-call' }) < at('bg-1'), 'after the wait that names the session');
+  // A subagent it launches is in its session too, and what that one launched follows it into its own.
+  await c.emit(system('task_started', { task_id: 'agent-2', tool_use_id: 'agent-2-call', task_type: 'local_agent', description: '看日志', is_backgrounded: true, parent_task_id: 'agent-1' }));
+  assert.deepEqual(c.waits().filter(w => w.waitId === 'agent-2'), [{ sessionId: 'agent-call', waitId: 'agent-2', state: 'waiting', kind: 'subagent', title: '看日志',
+    stoppable: true, childSessionId: 'agent-2-call', toolCallId: 'agent-2-call' }]);
+  assert.deepEqual(c.waits().filter(w => w.waitId === 'bg-2'), [{ sessionId: 'agent-2-call', waitId: 'bg-2', state: 'waiting', kind: 'task', title: 'tail', stoppable: true, toolCallId: 'bash-2' }]);
+  assert.ok(at('agent-2') < at('bg-2'));
+  // Its end, as the session settles, is told there too; the main thread's own stay in the session's own.
+  await c.emit(system('task_started', { task_id: 'bg-3', tool_use_id: 'bash-3', task_type: 'local_bash', description: 'build', is_backgrounded: true }),
+    system('task_notification', { task_id: 'bg-1', status: 'completed' }), system('session_state_changed', { state: 'idle' }));
+  assert.deepEqual(c.waits().filter(w => w.waitId === 'bg-1').at(-1), { sessionId: 'agent-call', waitId: 'bg-1', state: 'done' });
+  assert.deepEqual(sessions('bg-3'), [c.sessionId]);
+});
+
+test('Coda stops what a subagent launched by that subagent\'s session', async t => {
+  const c = await setup(t); await c.open();
+  await c.emit(system('task_started', { task_id: 'agent-1', tool_use_id: 'agent-call', task_type: 'local_agent', description: '查环境', is_backgrounded: true }),
+    system('task_started', { task_id: 'bg-1', tool_use_id: 'bash-1', task_type: 'local_bash', description: 'sleep', is_backgrounded: true, parent_task_id: 'agent-1' }));
+  assert.deepEqual((await c.request('_coda/wait/stop', { sessionId: 'agent-call', waitId: 'bg-1' })).result, {});
+  await until(() => wait(c, 'bg-1').some(w => w.state === 'cancelled'));
+  assert.deepEqual([...new Set(c.waits().filter(w => w.waitId === 'bg-1').map(w => w.sessionId))], ['agent-call']);
+  assert.equal((await c.request('_coda/wait/stop', { sessionId: 'agent-call', waitId: 'bg-1' })).error.code, -32602, 'nothing left to stop');
+});
+
 test('approvals offer allow once, each suggested rule by its whole sentence, and deny; a withdrawn one is withdrawn from Coda too', async t => {
   const c = await setup(t); await c.open();
   const reading = { type: 'addRules', destination: 'session', behavior: 'allow', rules: [{ toolName: 'Read', ruleContent: `/${homedir()}/.local/**` }] };
