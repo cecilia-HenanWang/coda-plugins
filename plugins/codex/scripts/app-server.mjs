@@ -1,12 +1,12 @@
-// A private connection to the Codex CLI's app-server, as this machine's Codex sessions are signed in: the CLI the resources
-// page chose (`CODA_CODEX_ENTRY`, the component environment panel commands get) in its own home (`CODEX_HOME`, or ~/.codex).
+// A private connection to the Codex CLI's app-server, as this machine's Codex sessions are signed in: the plugin's own CLI
+// (its `@openai/codex` dependency, the one codex-acp runs) in its own home (`CODEX_HOME`, or ~/.codex).
 // Codex reads and renews that login itself; nothing of it passes through here, unless a login is handed to it (the account
 // bridge, agent/accounts.mjs, which also takes what Codex says and asks of its client: `onMessage`).
 import { spawn } from 'node:child_process';
 import { readLines } from '../agent/lines.mjs';
 
 export class AppServer {
-  constructor({ env = process.env, command = [process.execPath, env.CODA_CODEX_ENTRY || new URL(import.meta.resolve('@openai/codex/bin/codex.js')).pathname, 'app-server'],
+  constructor({ env = process.env, command = [process.execPath, new URL(import.meta.resolve('@openai/codex/bin/codex.js')).pathname, 'app-server'],
     timeoutMs = 15_000, onMessage = null } = {}) {
     this.pending = new Map(); this.next = 0; this.timeoutMs = timeoutMs; this.onMessage = onMessage;
     this.child = spawn(command[0], command.slice(1), { env, stdio: ['pipe', 'pipe', 'ignore'] });

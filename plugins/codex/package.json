@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.12.0",
-    "@openai/codex": "0.159.2"
+    "@openai/codex": "0.162.1"
   },
   "overrides": {
     "@agentclientprotocol/codex-acp": {
@@ -49,7 +49,7 @@
           }
         },
         "signIn": {
-          "command": "NO_COLOR=1 exec node \"$CODA_CODEX_ENTRY\" login --device-auth",
+          "command": "NO_COLOR=1 exec node \"$CODA_PLUGIN_PATH/scripts/cli.mjs\" login --device-auth",
           "note": "登录保存在这台机器的 Codex 里，由 Codex 自己续期。"
         }
       }

@@ -1,5 +1,5 @@
-// The「Claude」panel's login (`signIn`): `claude auth login --claudeai` of the CLI that comes with the Claude SDK the
-// resources page chose (`CODA_CLAUDE_SDK_ENTRY`), never another on the PATH. Coda shows the authorization link this prints
+// The「Claude」panel's login (`signIn`): `claude auth login --claudeai` of the CLI that comes with the plugin's own Claude
+// SDK (the one its sessions run), never another on the PATH. Coda shows the authorization link this prints
 // and writes the code the page gave back to its input, once (docs/plugins.md「面板的登录」). Only the official link is
 // passed on, and only a code bound to it is handed to the CLI, which does the exchange, keeps and renews the credentials.
 // What the CLI says otherwise is not passed on: it may carry the code. `--installed` says whether that CLI is there.
@@ -9,9 +9,9 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 
-// Resolved beside the selected SDK, as its query() resolves it.
-export function claudeBinary(env = process.env) {
-  const sdk = createRequire(env.CODA_CLAUDE_SDK_ENTRY || createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'));
+// Resolved beside the SDK, as its query() resolves it.
+export function claudeBinary() {
+  const sdk = createRequire(createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'));
   const platform = process.platform, arch = process.arch;
   const musl = platform === 'linux' && !process.report.getReport().header.glibcVersionRuntime;
   for (const suffix of platform === 'linux' ? (musl ? ['-musl', ''] : ['', '-musl']) : ['']) {

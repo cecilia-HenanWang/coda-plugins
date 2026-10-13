@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../check/index.mjs';
 import { pluginDir } from './plugin.mjs';
+import { substituted } from './substitute.mjs';
 
 const at = path => fileURLToPath(new URL(path, import.meta.url));
 const limits = { settle: 10_000 };
@@ -39,7 +40,7 @@ function assertPasses(report, expected) {
 const EVERY = ['handshake.initialize', 'handshake.new', 'handshake.sigterm', 'handshake.exit-input', 'live.turn', 'live.updates'];
 
 test('claude, with the fixture SDK', async () => {
-  const report = await check('claude', 'claude-sdk', { CODA_CLAUDE_SDK_ENTRY: at('./claude/fixture-sdk.mjs') });
+  const report = await check('claude', 'claude-sdk', substituted({ '@anthropic-ai/claude-agent-sdk': at('./claude/fixture-sdk.mjs') }));
   assertPasses(report, [...EVERY, 'live.load']);
 });
 

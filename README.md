@@ -33,15 +33,23 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 
 | 插件 | npm 依赖（与 Coda 后端同版本） | 运行机上另要 |
 | --- | --- | --- |
-| `codex` | `@agentclientprotocol/codex-acp` 1.12.0、`@openai/codex` 0.159.2；`overrides` 让 codex-acp 用同一个 `@openai/codex` | — |
-| `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.293（平台二进制是 SDK 自己的可选依赖） | — |
-| `codex-accounts` | `@openai/codex` 0.159.2（面板命令没拿到 Coda 给的 Codex CLI 时用它） | `python3`（读 codex-account 管理器的账号，`scripts/manager.py`）；依赖 `codex` 插件 |
+| `codex` | `@agentclientprotocol/codex-acp` 1.12.0、`@openai/codex` 0.162.1；`overrides` 让 codex-acp 用同一个 `@openai/codex` | — |
+| `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.296（平台二进制是 SDK 自己的可选依赖） | — |
+| `codex-accounts` | 无：用 `codex` 插件的 Codex CLI（从 `CODA_PLUGIN_DEPENDENCIES` 给的目录找） | `python3`（读 codex-account 管理器的账号，`scripts/manager.py`）；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI（面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI（面板可从 Coda 安装、登录） |
 | `opencode` | 无 | 已安装并登录的 `opencode` |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
+
+### 升级 Agent 的 CLI 与 SDK
+
+Codex 会话、面板与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@openai/codex`；Claude 的是 `claude` 插件依赖的
+`@anthropic-ai/claude-agent-sdk`。插件按包名从自己的依赖里找它们，Coda 不另给路径。升级就是改这两个版本：
+Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 `package-lock.json` 一起改；合并后在 Coda「设置 › 插件」
+对该插件点「检查更新」，内置副本随 Coda 同步到新提交。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
+合并前用真实会话跑一轮。
 
 ## 在 Coda 里安装
 

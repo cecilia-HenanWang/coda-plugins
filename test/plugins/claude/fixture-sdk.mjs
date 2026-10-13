@@ -252,5 +252,5 @@ export function fixtureSdk(argv = []) {
   return { query: options => new Query(options),
     getSessionInfo: (id, { dir }) => existsSync(path(dir, id)) ? { sessionId: id } : undefined, renameSession: async () => {} };
 }
-// As an SDK entry (CODA_CLAUDE_SDK_ENTRY) of a Claude process of its own, with that process's arguments.
+// As the SDK of a Claude process of its own (substitute.mjs), with that process's arguments.
 export const { query, getSessionInfo, renameSession } = fixtureSdk(process.argv);
