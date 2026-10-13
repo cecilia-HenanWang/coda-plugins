@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, TERM_GRACE, agentEnv, clientCapabilities, currentModel } from './coda.mjs';
+import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, TERM_GRACE, cleared, clientCapabilities, currentModel, pluginEnv } from './coda.mjs';
 import { temporary } from './leftovers.mjs';
 import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
@@ -24,9 +24,13 @@ const BOOKKEEPING = new Set(['available_commands_update', 'current_mode_update',
 const secs = ms => (ms / 1000).toFixed(1);
 const short = (text, max = 80) => (text.length > max ? `${text.slice(0, max)}…` : text).replace(/\s+/g, ' ');
 
+// The environment Coda starts the agent with: the session's (here the checker's), and its plugin's (`plugin`: its directory,
+// settings and the plugins it depends on).
+const agentEnv = (plugin, base) => ({ ...cleared(process.env), ...pluginEnv({ ...plugin, stateDir: join(base, 'state') }) });
+
 // One process of the agent with the session it opens, and what it says, taken in order.
 class Session {
-  constructor({ agent, pluginDir, base, say, limits }) {
+  constructor({ agent, plugin, base, say, limits }) {
     this.say = say; this.limits = limits;
     this.waits = new Waits({ fail: (rule, message) => this.at.fail(rule, message), warn: (rule, message) => this.at.warn(rule, message) });
     this.turn = null; this.autonomous = null; this.autonomousTurns = 0; this.loading = true; this.pendingWaits = [];
@@ -35,7 +39,7 @@ class Session {
     this.cwd = join(base, 'work');
     for (const dir of [this.cwd, join(base, 'state')]) mkdirSync(dir, { recursive: true });
     this.proc = new AgentProcess({ command: agent.command, cwd: this.cwd,
-      env: { ...process.env, ...agentEnv({ pluginDir, stateDir: join(base, 'state') }) },
+      env: agentEnv(plugin, base),
       onMessage: message => { this.receive(message); this.changed(); }, onNoise: (line, why) => this.noise(line, why) });
     this.proc.exited.then(() => this.changed());
   }
@@ -62,7 +66,7 @@ class Session {
     if ('id' in m) return this.request(m);
     if (m.method === 'session/update') return this.update(m.params);
     if (m.method === '_coda/wait') {
-      // Coda keeps what is said while a session opens until it knows the session (docs/agent-protocol.md 规则 8).
+      // Coda keeps what is said while a session opens until it knows the session (docs/agent-protocol.md「Agent 活动」规则 7).
       if (this.loading) this.pendingWaits.push(m.params); else this.wait(m.params);
       return;
     }
@@ -96,7 +100,7 @@ class Session {
     this.track();
   }
   // Coda opens a turn of its own for a wait that goes `handling` outside a turn it sent, and ends it when none is
-  // (docs/agent-protocol.md 规则 3); one that went `handling` in a turn it sent goes on in one as that turn ends.
+  // (docs/agent-protocol.md「Agent 活动」规则 3); one that went `handling` in a turn it sent goes on in one as that turn ends.
   track() {
     const handling = this.waits.handling.length;
     if (!this.turn && handling && !this.autonomous) { this.autonomous = { started: Date.now(), updates: 0, text: '' }; this.autonomousTurns++; }
@@ -111,7 +115,7 @@ class Session {
       if (!parsed.success) { this.at.fail('request.schema', `${m.method} 不合 ACP schema：${explain(parsed.error, m.params)}`); this.proc.respond(m.id, refuse); return; }
       if (typeof m.params.sessionId === 'string' && !this.waits.owns(m.params.sessionId)) this.at.fail('request.session', `${what}说的会话 ${m.params.sessionId} 不是本会话或登记过的子会话`);
       if (!inTurn) {
-        this.at.fail('request.outside-turn', `${what}在一轮之外发来（没有进行中的 session/prompt，也没有 handling 的等待项）：Coda 拒绝（${permission ? '回 cancelled' : '回 cancel'}），在会话里记一条说明`);
+        this.at.fail('request.outside-turn', `${what}在一轮之外发来（没有进行中的 session/prompt，也没有 handling 的活动）：Coda 拒绝（${permission ? '回 cancelled' : '回 cancel'}），在会话里记一条说明`);
         this.proc.respond(m.id, refuse);
         return;
       }
@@ -258,8 +262,8 @@ class Session {
 // The end of its input, in a process of its own once it has answered `initialize`: what an agent sees when whatever runs
 // it is gone without stopping it (Coda's session host killed outright). Coda stops agents with SIGTERM and does not rely on
 // it, so one that stays is only worth a look.
-async function inputEnd({ agent, pluginDir, base, limits, say }) {
-  const proc = new AgentProcess({ command: agent.command, cwd: join(base, 'work'), env: { ...process.env, ...agentEnv({ pluginDir, stateDir: join(base, 'state') }) } });
+async function inputEnd({ agent, plugin, base, limits, say }) {
+  const proc = new AgentProcess({ command: agent.command, cwd: join(base, 'work'), env: agentEnv(plugin, base) });
   try {
     try { await proc.request('initialize', { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: clientCapabilities() }, { timeout: limits.open }); }
     catch { return; }
@@ -275,10 +279,10 @@ async function live(session, prompt, limits, say) {
   const settled = await session.settle(limits.settle), waits = session.waits.registered;
   if (waits.length) {
     const kinds = Object.entries(Object.groupBy(waits, w => w.kind)).map(([kind, list]) => `${kind} ×${list.length}`).join('，');
-    say[settled ? 'pass' : 'warn']('live.waits', `等待项：登记 ${waits.length} 个（${kinds}），自主轮次 ${session.autonomousTurns} 次${settled ? '，都已结束'
+    say[settled ? 'pass' : 'warn']('live.waits', `Agent 活动：登记 ${waits.length} 个（${kinds}），自主轮次 ${session.autonomousTurns} 次${settled ? '，都已结束'
       : `；${secs(limits.settle)} 秒后还有 ${session.waits.open.length} 个没结束（定时与长任务可以这样，不算失败）`}`);
     if (session.lastAutonomous?.text) say.info('live.autonomous', `自主轮次的回复「${short(session.lastAutonomous.text)}」`);
-  } else say.info('live.waits', '这一轮没有登记等待项');
+  } else say.info('live.waits', '这一轮没有报 Agent 活动（_coda/wait）');
   // A second turn, stopped; and a turn of the agent's own that it brings about, stopped too. Coda sends nothing while a turn
   // of the agent's own is under way: a message waits for it to end.
   await new Promise(resolve => setTimeout(resolve, limits.pause));
@@ -291,22 +295,23 @@ async function live(session, prompt, limits, say) {
   if (!session.malformed) say.pass('live.updates', `session/update 都合 ACP schema（SDK 1.4.0）：${kinds || '无'}`);
 }
 
-// Checks one declared agent of the plugin in `pluginDir`; `say(level)` gives the report scope for a level.
-export async function checkAgent({ agent, pluginDir, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
+// Checks one declared agent of the plugin in `pluginDir`, with the plugin's `settings` and `dependencies` (by ID, their
+// directories) as Coda gives them; `say(level)` gives the report scope for a level.
+export async function checkAgent({ agent, pluginDir, settings = {}, dependencies = {}, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
   const limits = { ...LIMITS, ...given }, temp = temporary('coda-plugin-check-'), base = temp.dir;
-  const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [];
+  const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [], plugin = { pluginDir, settings, dependencies };
   try {
-    const session = new Session({ agent, pluginDir, base, say: scopes, limits });
+    const session = new Session({ agent, plugin, base, say: scopes, limits });
     sessions.push(session);
     const opened = await session.open();
     if (opened === 'ok' && running) await live(session, prompt, limits, scopes.live);
     else if (running) scopes.live.skip('live.skipped', opened === 'signed-out' ? '未登录，一轮跳过' : '握手没过，一轮跳过');
     else scopes.live.skip('live.skipped', '一轮要 --live（会真的发一条提示词，可能要登录、花额度）');
     await session.finish(scopes.handshake);
-    if (opened !== 'failed') await inputEnd({ agent, pluginDir, base, limits, say: scopes.handshake });
+    if (opened !== 'failed') await inputEnd({ agent, plugin, base, limits, say: scopes.handshake });
     if (opened !== 'ok' || !running) return;
     if (!session.canLoad) { scopes.live.skip('live.load', '没声明 loadSession：Coda 不会要求恢复，session/load 不查'); return; }
-    const again = new Session({ agent, pluginDir, base, say: scopes, limits });
+    const again = new Session({ agent, plugin, base, say: scopes, limits });
     sessions.push(again);
     again.live = true;
     if (await again.open(session.sessionId) === 'ok') scopes.live.pass('live.load', `新进程 session/load 接上了会话 ${session.sessionId}`);

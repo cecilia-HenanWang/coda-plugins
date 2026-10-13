@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
-import { ARGS_LIMIT, ITEM_LIMITS, ITEM_TYPES, OUTPUT_LIMIT, PANEL_READ_LIMIT } from './coda.mjs';
+import { ARGS_LIMIT, ITEM_LIMITS, ITEM_TYPES, OUTPUT_LIMIT, PANEL_READ_LIMIT, THREAD_ENV, cleared, groupsState, pluginEnv } from './coda.mjs';
 import { group, temporary } from './leftovers.mjs';
 
 class Invalid extends Error {}
@@ -90,12 +90,13 @@ function run(command, env, limit) {
 }
 const lastLine = text => text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n').map(l => l.trim()).filter(Boolean).at(-1)?.slice(0, 200) ?? '';
 
-export async function checkPanel({ panel, pluginDir, settings, say, limit = PANEL_READ_LIMIT }) {
+export async function checkPanel({ panel, pluginDir, settings, dependencies = {}, say, limit = PANEL_READ_LIMIT }) {
   // The plugin's state directory, which Coda keeps for it; here a temporary one, gone however the checker ends.
   const state = temporary('coda-plugin-check-state-');
   try {
-    const env = { ...process.env, CODA_PLUGIN_PATH: pluginDir, CODA_PLUGIN_STATE: state.dir, CODA_PLUGIN_SETTINGS: JSON.stringify(settings),
+    const env = { ...cleared(process.env), ...pluginEnv({ pluginDir, stateDir: state.dir, settings, dependencies }), CODA_GROUPS_STATE: groupsState(),
       PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(':') };
+    delete env[THREAD_ENV];
     const started = Date.now(), result = await run(panel.command, env, limit);
     if (result.timedOut) return say.fail('panel.read', `读取 ${limit / 1000} 秒没结束：Coda 停下这次读取`);
     if (result.overflow) return say.fail('panel.read', `标准输出超过 ${OUTPUT_LIMIT / 1024} KiB：Coda 停下这次读取`);

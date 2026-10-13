@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -204,7 +204,49 @@ describe('manifests Coda does not take', () => {
     assert.deepEqual(failed(elsewhere), ['manifest.name', 'manifest.agent-id']);
     assert.match(elsewhere.failures[0].message, /只有 coda-console\/coda-plugins 的 plugins\/claude/);
   });
-  test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { commands: [] } } }, 'manifest.contributes'));
+  test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { menus: [] } } }, 'manifest.contributes'));
+  test('a command Coda answers for itself, or one on two lines', async () => {
+    await manifestFails({ manifest: { contributes: { commands: [{ name: 'gh', command: 'exec gh' }] } } }, 'manifest.commands', /gh、coda-run/);
+    await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.commands');
+  });
+  test('a group with a key Coda does not read', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity', note: '' }],
+    configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.groups'));
+  test("a built-in plugin's group or command", async () => {
+    await manifestFails({ manifest: { contributes: { commands: [{ name: 'host-sim', command: 'exec true' }] } } }, 'manifest.claims', /内置插件 host/);
+    await manifestFails({ manifest: { contributes: { groups: [{ name: 'host', capacity: 'liar.capacity' }],
+      configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.claims', /组 host/);
+  });
+  test('commands and groups of its own are taken', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { commands: [{ name: 'liar-run', command: 'exec true' }],
+      groups: [{ name: 'liar', capacity: 'liar.capacity' }], configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }), { manifestOnly: true });
+    assertPasses(report, ['manifest.commands', 'manifest.groups']);
+  });
+  test("a panel's command gets what Coda gives a plugin's processes, and the directories of the plugins it depends on beside it", async () => {
+    const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-deps-')), dir = join(top, 'reader');
+    temps.push(top);
+    mkdirSync(join(top, 'base'));
+    writeFileSync(join(top, 'base/package.json'), JSON.stringify({ name: 'base', version: '1.0.0', contributes: {} }));
+    mkdirSync(dir);
+    const seen = join(top, 'seen.json');
+    writeFileSync(join(dir, 'panel.mjs'), `import { writeFileSync } from 'node:fs';
+      const e = process.env;
+      writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ dependencies: JSON.parse(e.CODA_PLUGIN_DEPENDENCIES),
+        settings: JSON.parse(e.CODA_PLUGIN_SETTINGS), groups: JSON.parse(e.CODA_GROUPS_STATE).groups, node: e.CODA_NODE, thread: e.CODA_THREAD_ID ?? null }));
+      console.log(JSON.stringify({ items: [] }));`);
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'reader', version: '1.0.0', extensionDependencies: ['base', 'gone'], contributes: {
+      configuration: { properties: { 'reader.size': { type: 'integer', default: 3 } } },
+      panels: [{ id: 'env', title: '环境', command: 'node "$CODA_PLUGIN_PATH/panel.mjs"' }] } }));
+    // A check run from inside a session: neither its ID nor its plugin's variables reach the plugin's processes.
+    const before = { CODA_THREAD_ID: process.env.CODA_THREAD_ID, CODA_PLUGIN_EXTENSIONS: process.env.CODA_PLUGIN_EXTENSIONS };
+    Object.assign(process.env, { CODA_THREAD_ID: 'a-session', CODA_PLUGIN_EXTENSIONS: '{"x":[]}' });
+    try {
+      const { report } = await checkPlugin(dir, { limits });
+      assert.deepEqual(report.failures, []);
+      assert.match(report.items.find(item => item.rule === 'manifest.extensions').message, /gone 不在旁边/);
+      assert.deepEqual(JSON.parse(readFileSync(seen, 'utf8')), { dependencies: { base: realpathSync(join(top, 'base')) }, settings: { 'reader.size': 3 },
+        groups: [], node: process.execPath, thread: null });
+    } finally { for (const [key, value] of Object.entries(before)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  });
   test('a panel whose output Coda cannot read', async () => {
     const dir = plugin({ files: { 'panel.mjs': `console.log(JSON.stringify({ items: [{ type: 'meter', label: '用量', fraction: 1.5 }] }))` },
       manifest: { contributes: { panels: [{ id: 'usage', title: '用量', command: 'node "$CODA_PLUGIN_PATH/panel.mjs"' }] } } });
