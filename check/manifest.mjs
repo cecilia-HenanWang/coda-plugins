@@ -6,8 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_PLUGINS, CAPABILITY, CONTRIBUTES, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM,
-  PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT, SEGMENT, SETTING_KEY, SIZE_LIMIT } from './coda.mjs';
+import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_HERE, BUILTIN_PLUGINS, BUILTIN_REPOSITORY, CAPABILITY, CONTRIBUTES, DEPTH, ICON_LIMIT,
+  INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT, SEGMENT, SETTING_KEY, SIZE_LIMIT } from './coda.mjs';
 
 class Invalid extends Error {}
 const check = (condition, message) => { if (!condition) throw new Invalid(message); };
@@ -200,6 +200,20 @@ function files(dir) {
   walk('');
   return { top: null, entries };
 }
+// The addresses the repository at `top` is fetched from.
+function remotes(top) {
+  try { return execFileSync('git', ['-C', top, 'remote', '-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').map(l => l.split(/\s+/)[1]).filter(Boolean); }
+  catch { return []; }
+}
+// Why npm could not install from the lock file next to the manifest (`npm ci` refuses a lock that does not match), or null.
+function lockProblem(dir, manifest) {
+  let lock;
+  try { lock = JSON.parse(readFileSync(join(dir, NPM_LOCK), 'utf8')); } catch (e) { return `${NPM_LOCK} 读不了：${e.message}`; }
+  const root = lock?.packages?.[''];
+  if (!root) return `${NPM_LOCK} 不是 npm 7 以后的格式（没有 packages[""]）`;
+  const differ = NPM.filter(key => JSON.stringify(Object.entries(manifest[key] ?? {}).sort()) !== JSON.stringify(Object.entries(root[key] ?? {}).sort()));
+  return differ.length ? `${NPM_LOCK} 与 package.json 的 ${differ.join('、')} 对不上：npm ci 会拒绝，在插件目录里 npm install 重新生成` : null;
+}
 function withStat(dir, entry) {
   let stat = null;
   try { stat = lstatSync(join(dir, entry.name)); } catch {}
@@ -217,11 +231,17 @@ export function checkManifest(dir, say) {
     try { const value = fn(); if (passed) say.pass(rule, typeof passed === 'function' ? passed(value) : passed); return value; }
     catch (e) { if (!(e instanceof Invalid)) throw e; say.fail(rule, e.message); return undefined; }
   };
+  const { top, entries } = files(dir);
+  // Git names the top by its real path; so is the directory measured.
+  const path = top ? relative(top, realpathSync(dir)).split(sep).filter(Boolean) : null;
+  // A built-in plugin kept here, in its own place: Coda's copy of it comes from there, and so may a newer version.
+  const own = BUILTIN_HERE.includes(manifest.name) && path?.join('/') === `plugins/${manifest.name}` && remotes(top).some(url => BUILTIN_REPOSITORY.test(url));
   const id = part('manifest.name', () => {
     check(typeof manifest.name === 'string' && PLUGIN_ID.test(manifest.name), 'package.json 的 name 只能用小写字母、数字和「-」，以字母开头，至多 40 个字符');
-    check(!BUILTIN_PLUGINS.includes(manifest.name), `name ${manifest.name} 与 Coda 的内置插件同名，从仓库装不了`);
+    check(own || !BUILTIN_PLUGINS.includes(manifest.name), `name ${manifest.name} 与 Coda 的内置插件同名，从仓库装不了${BUILTIN_HERE.includes(manifest.name)
+      ? `（只有 coda-console/coda-plugins 的 plugins/${manifest.name}，即 Coda 内置副本的来源，能装同名的新版本）` : ''}`);
     return manifest.name;
-  }, name => `package.json 能读，插件 ID ${name}`);
+  }, name => `package.json 能读，插件 ID ${name}${own ? `（Coda 内置插件 ${name} 自己的来源：从这里装的新版本盖过 Coda 的内置副本）` : ''}`);
   const contributes = part('manifest.contributes', () => {
     check(manifest.contributes && typeof manifest.contributes === 'object' && !Array.isArray(manifest.contributes),
       'contributes 须为对象（Coda 只把带 contributes 的目录当插件）');
@@ -281,8 +301,9 @@ export function checkManifest(dir, say) {
       const declared = part('manifest.agents', () => agent(raw, `contributes.agents[${i}]`, dir));
       if (!declared) return;
       if (agents.some(a => a.id === declared.id)) { say.fail('manifest.agents', 'contributes.agents 里有重复的 id'); return; }
+      // A built-in plugin from its own source declares its own agents again; the old Claude ID stays nobody's.
       const owner = BUILTIN_AGENTS[declared.id];
-      if (owner) say.fail('manifest.agent-id', declared.id === 'claude'
+      if (owner && (declared.id === 'claude' || !own || owner !== name)) say.fail('manifest.agent-id', declared.id === 'claude'
         ? 'Agent ID claude 是 Coda 早先的 Claude 会话存的 ID：Coda 的读取来源不拦它，但装上会接管那些旧会话，换一个 ID'
         : `Agent ${declared.id} 已由内置插件 ${owner} 声明，换一个 ID`);
       agents.push(declared);
@@ -320,24 +341,27 @@ export function checkManifest(dir, say) {
     if (deps?.length) say.info('manifest.extensions', `依赖 ${deps.join('、')}：Coda 装它时先装它们（这台机器的插件，或同一提交里的兄弟目录）`);
   });
 
-  // What a repository source may not hold (plugin-sources.mjs).
+  // npm dependencies are installed from the lock file Coda takes with the rest of the commit.
   const npm = NPM.filter(key => manifest[key] && typeof manifest[key] === 'object' && Object.keys(manifest[key]).length);
-  if (npm.length) say.fail('source.npm', `带 npm 依赖（${npm.join('、')}）：Coda 不替从仓库装的插件装依赖，入口只能用插件目录里的代码与 Node 自带的模块`);
-  const { top, entries } = files(dir);
+  if (npm.length) {
+    const count = npm.reduce((n, key) => n + Object.keys(manifest[key]).length, 0), lock = entries.find(e => e.name === NPM_LOCK && !e.missing);
+    const problem = !lock ? `带 npm 依赖（${npm.join('、')}）却没有 ${NPM_LOCK}${existsSync(join(dir, NPM_LOCK)) ? '（有这个文件，但被 .gitignore 忽略了）' : ''}：Coda 在插件的版本目录里 npm ci，没有锁文件就装不了`
+      : lockProblem(dir, manifest);
+    if (problem) say.fail('source.npm', problem);
+    else say.pass('source.npm', `npm 依赖 ${count} 个，带 ${NPM_LOCK}：Coda 在插件的版本目录里 npm ci 装它们`);
+  }
+  // What a repository source may not hold (plugin-sources.mjs).
   const link = entries.find(e => e.mode === '120000'), module = entries.find(e => e.mode === '160000');
   const size = entries.reduce((sum, e) => sum + e.size, 0);
   if (link) say.fail('source.symlink', `目录里有符号链接：${link.name}`);
   if (module) say.fail('source.submodule', `目录里有子模块：${module.name}`);
   if (size > SIZE_LIMIT) say.fail('source.size', `整个目录超过 ${SIZE_LIMIT / 1024 / 1024} MiB（现为 ${(size / 1024 / 1024).toFixed(1)} MiB）`);
-  let path = null;
-  if (top) {
-    // Git names the top by its real path; so is the directory measured.
-    path = relative(top, realpathSync(dir)).split(sep).filter(Boolean);
+  if (path) {
     if (path.length > DEPTH) say.fail('source.depth', `插件目录 ${path.join('/')} 在仓库根下超过 ${DEPTH} 层：Coda 扫不到`);
     const bad = path.find(p => !SEGMENT.test(p));
     if (bad) say.fail('source.segment', `目录名 ${bad} 只能用字母、数字和「._-」`);
   } else if (!SEGMENT.test(basename(dir))) say.fail('source.segment', `目录名 ${basename(dir)} 只能用字母、数字和「._-」`);
-  if (!npm.length && !link && !module && size <= SIZE_LIMIT) say.pass('source.files', `从仓库安装的限制：无 npm 依赖、符号链接与子模块，整个目录 ${(size / 1024).toFixed(1)} KiB`);
+  if (!link && !module && size <= SIZE_LIMIT) say.pass('source.files', `从仓库安装的限制：无符号链接与子模块，整个目录 ${(size / 1024).toFixed(1)} KiB`);
   const untracked = entries.filter(e => e.untracked), missing = entries.filter(e => e.missing);
   if (untracked.length) say.warn('source.untracked', `${untracked.length} 个文件还没提交（如 ${untracked[0].name}）：Coda 只读提交里的文件`);
   if (missing.length) say.warn('source.missing', `${missing.length} 个已跟踪的文件在工作区里不见了（如 ${missing[0].name}）`);

@@ -1,11 +1,13 @@
 // The checker against this repository's plugins (they pass every level) and against plugins that get Coda's contract
 // wrong on purpose (each fails on the rule it breaks, and nothing else does).
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../check/index.mjs';
 
@@ -39,8 +41,8 @@ function plugin({ mode = 'honest', agent = {}, manifest = {}, files = {} } = {})
 describe('this repository', () => {
   test('templates/agent passes every level', async () => {
     const { report } = await checkPlugin(at('templates/agent'), { live: true, limits });
-    assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files', 'handshake.initialize', 'handshake.new', 'handshake.exit',
-      'live.turn', 'live.cancel', 'live.updates']);
+    assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files', 'handshake.initialize', 'handshake.new', 'handshake.sigterm',
+      'handshake.exit-input', 'live.turn', 'live.cancel', 'live.updates']);
     assert.ok(rules(report, 'skip').includes('live.load'), 'session/load is not asked of an agent that does not declare it');
   });
   test('templates/agent registers a wait and takes a turn of its own', async () => {
@@ -88,11 +90,10 @@ describe('a liar fails on the rule it breaks', () => {
     ['bad-wait', 'wait.invalid', { live: true }],
     ['wait-no-params', 'wait.invalid', { live: true }],
     ['after-terminal', 'wait.after-terminal', { live: true }],
-    ['subagent-no-child', 'wait.subagent-child', { live: true }],
-    ['timer-no-at', 'wait.timer-at', { live: true }],
     ['permission-outside', 'request.outside-turn', { live: true }],
     ['ignore-cancel', 'live.cancel', { live: true }],
-    ['linger', 'handshake.exit', {}],
+    ['cancel-end-turn', 'live.cancel-reason', { live: true }],
+    ['ignore-sigterm', 'handshake.sigterm', {}],
     ['load-fails', 'handshake.load', { live: true }],
   ];
   for (const [mode, rule, options] of cases) test(mode, async () => {
@@ -122,9 +123,29 @@ describe('a liar fails on the rule it breaks', () => {
     assert.deepEqual(failed(report), []);
     assert.ok(rules(report, 'warn').includes('wire.noise'));
   });
-  test('one that ignores the end of its input is told whether SIGTERM, as Coda stops it, would do', async () => {
+  test('one that ignores the end of its input but goes on SIGTERM, as Coda stops it, is worth a look only', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'linger' }), { limits });
-    assert.match(report.failures[0].message, /SIGTERM 能让它退出/);
+    assertPasses(report, ['handshake.sigterm']);
+    assert.ok(rules(report, 'warn').includes('handshake.exit-input'));
+  });
+  test('one that takes longer after SIGTERM than Coda waits before SIGKILL is worth a look', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'slow-sigterm' }), { limits: { ...limits, exit: 3_000 } });
+    assertPasses(report, ['handshake.sigterm']);
+    assert.ok(rules(report, 'warn').includes('handshake.sigterm-slow'));
+  });
+  test('a reply already on its way as the cancel goes out is not a turn that would not stop', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'reply-in-flight' }), { live: true, limits });
+    assert.deepEqual(failed(report), []);
+    const said = report.items.find(item => item.rule === 'live.cancel-reason');
+    assert.equal(said?.status, 'info', JSON.stringify(report.items, null, 1));
+    assert.match(said.message, /还没读到 session\/cancel/);
+  });
+  test('a subagent without its session and a timer without its time are taken by Coda: worth a look', async () => {
+    for (const [mode, rule] of [['subagent-no-child', 'wait.subagent-child'], ['timer-no-at', 'wait.timer-at']]) {
+      const { report } = await checkPlugin(plugin({ mode }), { live: true, limits });
+      assert.deepEqual(failed(report), [], mode);
+      assert.ok(rules(report, 'warn').includes(rule), mode);
+    }
   });
   test('a command that does not start', async () => {
     const { report } = await checkPlugin(plugin({ agent: { command: 'exec definitely-not-installed-agent acp' } }), { limits });
@@ -146,12 +167,39 @@ describe('manifests Coda does not take', () => {
   test('a key Coda does not read', () => manifestFails({ agent: { args: ['acp'] } }, 'manifest.agents', /不支持的键：args/));
   test('a built-in plugin name', () => manifestFails({ manifest: { name: 'grok' } }, 'manifest.name', /内置插件同名/));
   test('a built-in agent ID', () => manifestFails({ agent: { id: 'claude-sdk' } }, 'manifest.agent-id', /内置插件 claude/));
-  test('npm dependencies', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } } }, 'source.npm'));
+  test('npm dependencies without a lock file', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } } }, 'source.npm', /没有 package-lock\.json/));
+  test('a lock file that does not match the dependencies', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } },
+    files: { 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { left: '2.0.0' } } } }) } }, 'source.npm', /对不上/));
+  test('npm dependencies with their lock file are installed by Coda', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { dependencies: { left: '1.0.0' } },
+      files: { 'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'liar', dependencies: { left: '1.0.0' } } } }) } }), { manifestOnly: true });
+    assertPasses(report, ['source.npm', 'source.files']);
+  });
   test('a symbolic link', async () => {
     const dir = plugin();
     symlinkSync('/etc/hosts', join(dir, 'hosts'));
     const { report } = await checkPlugin(dir, { manifestOnly: true });
     assert.deepEqual(failed(report), ['source.symlink']);
+  });
+  test('a built-in plugin\'s name is its own source\'s alone, and the old Claude agent ID nobody\'s', async () => {
+    // A repository with the plugin where this one keeps it, fetched from here or from somewhere else.
+    const repo = (remote, agent) => {
+      const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-repo-')), dir = join(top, 'plugins/claude');
+      temps.push(top);
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(ICON, join(dir, 'icon.pdf'));
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'claude', version: '1.0.0', contributes: { agents: [{ id: agent, displayName: 'Claude',
+        icon: { light: 'icon.pdf' }, command: 'exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"' }] } }));
+      execFileSync('git', ['init', '-q', top]);
+      execFileSync('git', ['-C', top, 'remote', 'add', 'origin', remote]);
+      return dir;
+    };
+    const check = async dir => (await checkPlugin(dir, { manifestOnly: true })).report;
+    assert.deepEqual(failed(await check(repo('git@github.com:coda-console/coda-plugins.git', 'claude-sdk'))), []);
+    assert.deepEqual(failed(await check(repo('https://github.com/coda-console/coda-plugins', 'claude'))), ['manifest.agent-id']);
+    const elsewhere = await check(repo('https://github.com/someone/coda-plugins', 'claude-sdk'));
+    assert.deepEqual(failed(elsewhere), ['manifest.name', 'manifest.agent-id']);
+    assert.match(elsewhere.failures[0].message, /只有 coda-console\/coda-plugins 的 plugins\/claude/);
   });
   test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { commands: [] } } }, 'manifest.contributes'));
   test('a panel whose output Coda cannot read', async () => {
@@ -160,5 +208,26 @@ describe('manifests Coda does not take', () => {
     const { report } = await checkPlugin(dir, { agent: null, limits });
     assert.ok(failed(report).includes('panel.output'), JSON.stringify(report.items, null, 1));
     assert.match(report.failures.find(f => f.rule === 'panel.output').message, /fraction 须在 0–1 之间/);
+  });
+});
+
+describe('a check that is stopped', () => {
+  // A panel that says who it is and where its state is, then takes its time.
+  for (const signal of ['SIGINT', 'SIGTERM']) test(`${signal} while a panel is read leaves neither its process nor its state directory`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coda-plugin-check-test-')), mark = join(dir, 'mark');
+    temps.push(dir);
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'slow', version: '1.0.0',
+      contributes: { panels: [{ id: 'slow', title: '慢', command: `echo "$$ $CODA_PLUGIN_STATE" > '${mark}'; exec sleep 30` }] } }));
+    const checker = spawn(process.execPath, [at('bin/check.mjs'), dir], { stdio: 'ignore' });
+    const exited = once(checker, 'exit');
+    for (let i = 0; i < 1000 && !(existsSync(mark) && readFileSync(mark, 'utf8').endsWith('\n')); i++) await delay(10);
+    const [pid, state] = readFileSync(mark, 'utf8').trim().split(' ');
+    assert.ok(existsSync(state));
+    checker.kill(signal);
+    assert.deepEqual(await exited, [130, null]);
+    assert.equal(existsSync(state), false, 'its state directory is removed');
+    const alive = () => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
+    for (let i = 0; i < 200 && alive(); i++) await delay(10);
+    assert.equal(alive(), false, 'its process is gone');
   });
 });

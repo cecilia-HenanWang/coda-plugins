@@ -38,6 +38,8 @@ export function currentModel(session) {
 }
 // docs/agent-protocol.md「规则」3: a turn the user stops ends within this, or Coda closes the agent's process group.
 export const CANCEL_LIMIT = 30_000;
+// adapters/session-host.mjs `close`: Coda stops an agent with SIGTERM to its process group, and SIGKILL this long after.
+export const TERM_GRACE = 800;
 // application/service.mjs and option-cache.mjs: opening a session (initialize, session/new or session/load) may take this.
 export const OPEN_LIMIT = 60_000;
 
@@ -66,6 +68,15 @@ export const NPM = ['dependencies', 'optionalDependencies'];
 // The plugins Coda ships (backend/src/resources/plugins/): one from a repository may not take their names.
 export const BUILTIN_PLUGINS = ['approve-command', 'claude', 'cliproxy', 'codex', 'codex-accounts', 'develop', 'grok', 'host', 'human-check',
   'kimi', 'machine-stats', 'maintenance', 'opencode', 'review', 'secrets', 'testbed'];
+
+// ---- Ahead of CODA_COMMIT: the built-in agent plugins kept in this repository (#1069 第 4 步第二段) ----
+// Coda's copies of these are taken from `plugins/<id>` of this repository at a commit its lock file names, and a newer
+// version from the same place may be installed over a copy: only that source may take their names.
+export const BUILTIN_HERE = ['claude', 'codex', 'codex-accounts', 'grok', 'kimi', 'opencode'];
+export const BUILTIN_REPOSITORY = /(^|[/:])coda-console\/coda-plugins(\.git)?\/?$/;
+// A plugin's npm dependencies come with its package-lock.json: Coda installs them with `npm ci` in the plugin's version
+// directory, and cannot without one. (At CODA_COMMIT Coda still refuses npm dependencies.)
+export const NPM_LOCK = 'package-lock.json';
 // The agents they declare, by plugin, and `claude`, the agent ID sessions from before #1069 still store (docs/plugins.md「Agent」).
 export const BUILTIN_AGENTS = { 'claude-sdk': 'claude', codex: 'codex', grok: 'grok', kimi: 'kimi', opencode: 'opencode', claude: 'claude' };
 

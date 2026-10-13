@@ -2,20 +2,21 @@
 // agent's command the way Coda does, says what Coda says, and holds what the agent says to ACP's schema and to
 // docs/agent-protocol.md. Where Coda would quietly drop or refuse something, the check fails and says what Coda does.
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, agentEnv, clientCapabilities, currentModel } from './coda.mjs';
+import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, TERM_GRACE, agentEnv, clientCapabilities, currentModel } from './coda.mjs';
+import { temporary } from './leftovers.mjs';
 import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
 import { Waits } from './waits.mjs';
 
-// `pause`: a quiet moment between two turns, as between two messages of a person, for what an agent says after a turn
-// to be heard outside it. `term`: how long Coda's session host waits after SIGTERM before SIGKILL.
-export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, pause: 500, term: 800 };
-// Temporary directories not yet removed: they go however the checker ends.
-const bases = new Set();
-process.on('exit', () => { for (const base of bases) rmSync(base, { recursive: true, force: true }); });
+// `exit`: how long an agent may take to go after SIGTERM, or after its input ends. `pause`: a quiet moment between two
+// turns, as between two messages of a person, for what an agent says after a turn to be heard outside it. `term`: how long
+// Coda's session host waits after SIGTERM before SIGKILL.
+export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, pause: 500, term: TERM_GRACE };
+// A request of the checker's own, sent right behind a `session/cancel`; nothing answers it but an error (Method not found).
+// The agent reads it after the cancel, so its answer is written after the agent has read the cancel.
+export const BARRIER = '_codaCheck/barrier';
 const secs = ms => (ms / 1000).toFixed(1);
 const short = (text, max = 80) => (text.length > max ? `${text.slice(0, max)}…` : text).replace(/\s+/g, ' ');
 
@@ -163,16 +164,23 @@ class Session {
     return 'ok';
   }
   // One turn of Coda's: `session/prompt` with an ID of Coda's choosing, as AcpSession.prompt sends it. With `cancel`, stopped
-  // after the agent first says something, or `cancelDelay` after it was sent.
+  // after the agent first says something, or `cancelDelay` after it was sent; the barrier behind the cancel tells a reply
+  // written before the agent read the cancel (`readCancel` false) from one written after (true).
   async prompt(text, { cancel = false } = {}) {
-    const say = this.say.live, id = randomUUID(), turn = this.turn = { started: Date.now(), updates: 0, text: '' };
+    const say = this.say.live, id = randomUUID(), turn = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, readCancel: false };
     const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text }] },
-      { id, timeout: this.limits.turn, onReply: () => { this.turn = null; this.track(); } });
+      { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = turn.barrier?.answered ?? false; this.turn = null; this.track(); } });
     reply.catch(() => { if (this.turn === turn) { this.turn = null; this.track(); } });
     let cancelledAt = null;
     if (cancel) {
       await this.until(() => this.turn !== turn || turn.updates > 0, this.limits.cancelDelay);
-      if (this.turn === turn) { cancelledAt = Date.now(); this.proc.notify('session/cancel', { sessionId: this.sessionId }); }
+      if (this.turn === turn) {
+        cancelledAt = Date.now();
+        this.proc.notify('session/cancel', { sessionId: this.sessionId });
+        // Taken as it is read, in order with the reply to the turn (`onReply`, not a promise's callback, which comes later).
+        const barrier = turn.barrier = { answered: false };
+        this.proc.request(BARRIER, {}, { timeout: this.limits.cancel, onReply: () => { barrier.answered = true; } }).catch(() => {});
+      }
     }
     let m, timer;
     try {
@@ -195,7 +203,10 @@ class Session {
     } else if (!cancelledAt) say.info('live.cancel', `第二轮在取消前就结束了（stopReason ${stop}），取消没机会生效`);
     else {
       say.pass('live.cancel', `session/cancel 后 ${secs(Date.now() - cancelledAt)} 秒结束，stopReason ${stop}`);
-      if (stop !== 'cancelled') say.warn('live.cancel-reason', `取消后 stopReason 是 ${stop}：ACP 要求回 cancelled`);
+      // A reply already on its way as the cancel went out is no refusal to stop: the turn had ended. One written once the
+      // cancel was read is: ACP wants `cancelled` then.
+      if (stop !== 'cancelled' && turn.readCancel) say.fail('live.cancel-reason', `读到 session/cancel 之后这一轮回的 stopReason 是 ${stop}（紧跟取消发的探测请求先得到了答复）：ACP 要求回 cancelled；Coda 按回的记，这一轮成了正常结束而不是已停止`);
+      else if (stop !== 'cancelled') say.info('live.cancel-reason', `这一轮回了 stopReason ${stop}，但答复写出时还没读到 session/cancel（它先于紧跟取消发的探测请求的答复）：取消送到前这一轮已经结束，不算没停`);
     }
     return stop;
   }
@@ -215,24 +226,37 @@ class Session {
     }
     return !this.waits.open.length;
   }
-  // Closes its standard input; it should be gone within `exit`. One that is not is then stopped as Coda stops it (SIGTERM
-  // to its group), to say whether that would do. One that ended before is said to have, unless that was said already. Its
-  // process group goes either way.
+  // Stops it as Coda's session host stops an agent (adapters/session-host.mjs): SIGTERM to its process group, its input
+  // left open. It should be gone within `exit`; past `term` Coda would already have sent SIGKILL. One that ended before is
+  // said to have, unless that was said already. Its process group goes either way.
   async finish(say) {
     if (this.proc.exit) {
       const { code, signal } = this.proc.exit, words = this.proc.lastWords();
       if (!this.reportedExit) say.fail('handshake.exited', `Agent 进程提前退出了（${signal ? `信号 ${signal}` : `退出码 ${code}`}）${words ? `：${words}` : ''}`);
     } else {
-      const took = await this.proc.closeInput(this.limits.exit);
-      if (took !== null) say.pass('handshake.exit', `关标准输入后 ${secs(took)} 秒退出`);
+      const took = await this.proc.terminate(this.limits.exit);
+      if (took === null) say.fail('handshake.sigterm', `SIGTERM 后 ${secs(this.limits.exit)} 秒还没退出：Coda 关会话时对 Agent 的进程组发 SIGTERM，${secs(this.limits.term)} 秒后 SIGKILL`);
       else {
-        const termed = await this.proc.terminate(this.limits.term);
-        say.fail('handshake.exit', `关标准输入后 ${secs(this.limits.exit)} 秒还没退出${termed !== null
-          ? `（Coda 关会话时发的 SIGTERM 能让它退出）` : `；Coda 关会话时发的 SIGTERM 也没让它在 ${secs(this.limits.term)} 秒内退出，只能 SIGKILL`}`);
+        say.pass('handshake.sigterm', `SIGTERM 后 ${secs(took)} 秒退出`);
+        if (took > this.limits.term) say.warn('handshake.sigterm-slow', `SIGTERM 后 ${secs(took)} 秒才退出：Coda 只等 ${secs(this.limits.term)} 秒就 SIGKILL，收尾会被打断`);
       }
     }
     this.proc.kill();
   }
+}
+
+// The end of its input, in a process of its own once it has answered `initialize`: what an agent sees when whatever runs
+// it is gone without stopping it (Coda's session host killed outright). Coda stops agents with SIGTERM and does not rely on
+// it, so one that stays is only worth a look.
+async function inputEnd({ agent, pluginDir, base, limits, say }) {
+  const proc = new AgentProcess({ command: agent.command, cwd: join(base, 'work'), env: { ...process.env, ...agentEnv({ pluginDir, stateDir: join(base, 'state') }) } });
+  try {
+    try { await proc.request('initialize', { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: clientCapabilities() }, { timeout: limits.open }); }
+    catch { return; }
+    const took = await proc.closeInput(limits.exit);
+    if (took !== null) say.pass('handshake.exit-input', `关掉标准输入后 ${secs(took)} 秒退出`);
+    else say.warn('handshake.exit-input', `关掉标准输入后 ${secs(limits.exit)} 秒还没退出：Coda 关会话用 SIGTERM，不靠它；但托管它的进程意外没了时，它只看得到输入结束，会一直留着`);
+  } finally { proc.kill(); }
 }
 
 async function live(session, prompt, limits, say) {
@@ -259,9 +283,8 @@ async function live(session, prompt, limits, say) {
 
 // Checks one declared agent of the plugin in `pluginDir`; `say(level)` gives the report scope for a level.
 export async function checkAgent({ agent, pluginDir, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
-  const limits = { ...LIMITS, ...given }, base = mkdtempSync(join(tmpdir(), 'coda-plugin-check-'));
+  const limits = { ...LIMITS, ...given }, temp = temporary('coda-plugin-check-'), base = temp.dir;
   const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [];
-  bases.add(base);
   try {
     const session = new Session({ agent, pluginDir, base, say: scopes, limits });
     sessions.push(session);
@@ -270,6 +293,7 @@ export async function checkAgent({ agent, pluginDir, live: running = false, prom
     else if (running) scopes.live.skip('live.skipped', opened === 'signed-out' ? '未登录，一轮跳过' : '握手没过，一轮跳过');
     else scopes.live.skip('live.skipped', '一轮要 --live（会真的发一条提示词，可能要登录、花额度）');
     await session.finish(scopes.handshake);
+    if (opened !== 'failed') await inputEnd({ agent, pluginDir, base, limits, say: scopes.handshake });
     if (opened !== 'ok' || !running) return;
     if (!session.canLoad) { scopes.live.skip('live.load', '没声明 loadSession：Coda 不会要求恢复，session/load 不查'); return; }
     const again = new Session({ agent, pluginDir, base, say: scopes, limits });
@@ -279,7 +303,6 @@ export async function checkAgent({ agent, pluginDir, live: running = false, prom
     await again.finish(scopes.live);
   } finally {
     for (const session of sessions) session.proc.kill();
-    rmSync(base, { recursive: true, force: true });
-    bases.delete(base);
+    temp.remove();
   }
 }

@@ -41,8 +41,10 @@ export class Waits {
         this.waits.set(key, { waitId: p.waitId, kind, state: p.state });
         return;
       }
-      if (kind === 'subagent' && !p.childSessionId) this.say.fail('wait.subagent-child', `子 Agent 等待项 ${p.waitId} 没带 childSessionId：Coda 认不出它的会话`);
-      if (kind === 'timer' && p.at === undefined) this.say.fail('wait.timer-at', `定时等待项 ${p.waitId} 没带 at（下次触发的时刻）`);
+      // Coda takes both as they are: a subagent whose session it is not told shows no transcript of its own, a timer without
+      // `at` no time (Coda's own Claude entry leaves it out when it cannot work out the next run).
+      if (kind === 'subagent' && !p.childSessionId) this.say.warn('wait.subagent-child', `子 Agent 等待项 ${p.waitId} 没带 childSessionId：Coda 照收，但认不出它的会话，它说的话没有单独的记录`);
+      if (kind === 'timer' && p.at === undefined) this.say.warn('wait.timer-at', `定时等待项 ${p.waitId} 没带 at（下次触发的时刻）：Coda 照收，只是显示不出时间`);
       const wait = { waitId: p.waitId, sessionId: p.sessionId, kind, state: p.state, title: p.title, stoppable: p.stoppable === true, inTurn: turn };
       this.waits.set(key, wait);
       this.registered.push(wait);

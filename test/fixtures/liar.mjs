@@ -10,7 +10,7 @@ const say = (sessionId, text) => notify('session/update', { sessionId, update: {
 const wait = params => notify('_coda/wait', params);
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'liar', options: [{ value: 'liar', name: '说错话' }] };
 const asked = new Map();
-let next = 0, turn = null, turns = 0;
+let next = 0, turn = null, turns = 0, afterCancel = null;
 // What the checker answered a request of ours.
 function ask(method, params) {
   const id = `liar-${next++}`;
@@ -46,12 +46,18 @@ const methods = {
     // The second turn, the one the checker stops, never ends.
     if (mode === 'ignore-cancel' && !first) await new Promise(() => {});
     say(sessionId, 'ok');
+    // It reads the cancel, and what comes after it, and says it ended as if it had not.
+    if (mode === 'cancel-end-turn' && !first) { await new Promise(resolve => { afterCancel = resolve; }); return { stopReason: 'end_turn' }; }
+    // Its answer is written before it reads the cancel the checker sends as it hears the `ok`: it is busy until then.
+    if (mode === 'reply-in-flight' && !first) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); return { stopReason: 'end_turn' }; }
     return { stopReason: me.cancelled ? 'cancelled' : 'end_turn' };
   },
 };
 
 createInterface({ input: process.stdin }).on('line', async line => {
   const message = JSON.parse(line);
+  // Something read after the cancel (the checker's barrier): handled before the stopped turn answers.
+  if (turn?.cancelled && message.method !== 'session/cancel') setImmediate(() => afterCancel?.());
   if (!('method' in message)) { asked.get(message.id)?.(message); return; }
   if (!('id' in message)) { if (message.method === 'session/cancel' && turn && mode !== 'ignore-cancel') turn.cancelled = true; return; }
   const method = methods[message.method];
@@ -62,4 +68,7 @@ createInterface({ input: process.stdin }).on('line', async line => {
   if (message.method === 'session/prompt' && mode === 'permission-outside' && turns === 1) void ask('session/request_permission', { sessionId: message.params.sessionId,
     toolCall: { toolCallId: 'c2', title: '之后再问' }, options: [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }] });
 }).on('close', () => { if (mode !== 'linger') process.exit(0); });
+// Stays after its input ends (until SIGTERM); stays after SIGTERM; goes a while after SIGTERM.
 if (mode === 'linger') setInterval(() => {}, 1000);
+if (mode === 'ignore-sigterm') process.on('SIGTERM', () => {});
+if (mode === 'slow-sigterm') process.on('SIGTERM', () => setTimeout(() => process.exit(0), 1200));
