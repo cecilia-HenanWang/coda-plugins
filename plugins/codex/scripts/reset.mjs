@@ -1,0 +1,12 @@
+// The panel's「使用完全重置」: redeems exactly the credit its button named (without one Codex would pick for itself), once.
+// Anything but a reset is said in one line and fails the action, so the panel shows it.
+import { randomUUID } from 'node:crypto';
+import { withAppServer } from './app-server.mjs';
+import { outcomes } from './quota.mjs';
+
+const { creditId } = JSON.parse(process.env.CODA_PANEL_ARGS || '{}');
+if (typeof creditId !== 'string' || !creditId) { console.error('没有指明用哪一次完全重置'); process.exit(1); }
+let outcome;
+try { ({ outcome } = await withAppServer(server => server.request('account/rateLimitResetCredit/consume', { creditId, idempotencyKey: randomUUID() }))); }
+catch (error) { console.error(`使用结果未确认，请核对剩余次数：${error.message}`); process.exit(1); }
+if (outcome !== 'reset') { console.error(outcomes[outcome] ?? '使用结果未确认，请核对剩余次数'); process.exit(1); }

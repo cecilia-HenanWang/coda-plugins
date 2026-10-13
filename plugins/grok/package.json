@@ -1,0 +1,43 @@
+{
+  "name": "grok",
+  "displayName": "Grok",
+  "description": "Grok Agent：运行机上的 Grok CLI 自己讲 ACP，每个会话一个进程；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
+  "version": "1.0.0",
+  "contributes": {
+    "agents": [
+      {
+        "id": "grok",
+        "displayName": "Grok",
+        "icon": {
+          "light": "icons/grok.pdf",
+          "template": true
+        },
+        "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; exec \"$g\" agent --no-leader stdio",
+        "modes": {
+          "title": "审批模式",
+          "unset": "按运行机配置",
+          "note": "审批沿用运行机的 Grok 配置。"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${GROK_HOME:-~/.grok}/config.toml"
+        ],
+        "setupHint": "请在「资源」里为运行机添加 Grok。"
+      }
+    ],
+    "panels": [
+      {
+        "id": "account",
+        "title": "Grok",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "maxAge": "PT5M",
+        "signIn": {
+          "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; BROWSER=/usr/bin/true NO_COLOR=1 exec \"$g\" login --device-auth",
+          "installed": "test -x \"$HOME/.grok/bin/grok\" || command -v grok >/dev/null",
+          "install": "SHELL= PATH=\"$HOME/.grok/bin:$PATH\" exec bash -c 'set -o pipefail; curl -fsSL https://x.ai/cli/install.sh | bash'",
+          "note": "登录保存在这台机器的 Grok CLI 里，由它自己续期；可以用 X 账号确认。"
+        }
+      }
+    ]
+  }
+}

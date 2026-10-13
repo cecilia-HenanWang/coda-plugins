@@ -1,0 +1,43 @@
+{
+  "name": "claude",
+  "displayName": "Claude",
+  "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
+  "version": "1.0.0",
+  "contributes": {
+    "agents": [
+      {
+        "id": "claude-sdk",
+        "displayName": "Claude SDK",
+        "icon": {
+          "light": "icons/claude.pdf"
+        },
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
+        "modes": {
+          "title": "审批模式",
+          "unset": "人工审批",
+          "auto": "auto"
+        },
+        "skillsDir": ".claude/skills",
+        "configFiles": [
+          "${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json",
+          ".claude/settings.json",
+          ".claude/settings.local.json"
+        ],
+        "setupHint": "请在运行机配置 Claude SDK 认证；若指定了 token 文件，请检查路径和权限。"
+      }
+    ],
+    "panels": [
+      {
+        "id": "limits",
+        "title": "Claude",
+        "command": "node \"$CODA_PLUGIN_PATH/scripts/panel.mjs\"",
+        "signIn": {
+          "command": "exec node \"$CODA_PLUGIN_PATH/scripts/login.mjs\"",
+          "installed": "node \"$CODA_PLUGIN_PATH/scripts/login.mjs\" --installed",
+          "input": "authorizationCode",
+          "note": "登录保存在这台机器上，供 Claude SDK 使用；额度在会话运行后出现。这台机器若已配置 OAuth token、API key 或云服务商，会话仍优先用那些配置。"
+        }
+      }
+    ]
+  }
+}
