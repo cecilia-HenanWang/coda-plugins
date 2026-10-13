@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+// coda-plugin-check <插件目录> [--agent <id>] [--manifest] [--live] [--prompt "…"]
+import { resolve } from 'node:path';
+import { parseArgs } from 'node:util';
+import pkg from '../package.json' with { type: 'json' };
+import { ACP_PROTOCOL_VERSION, CODA_COMMIT } from '../check/coda.mjs';
+import { checkPlugin } from '../check/index.mjs';
+import { format } from '../check/report.mjs';
+
+const USAGE = `用法：coda-plugin-check <插件目录> [--agent <id>] [--manifest] [--live] [--prompt "…"]
+
+  清单（总是查）  package.json 能不能被 Coda 读懂，从仓库安装的限制
+  握手（默认查）  照 Coda 的样子启动每个 Agent：initialize、session/new、关标准输入后退出；读每个面板一次
+  一轮（--live）  每个 Agent 发一轮提示词（默认「只回复 ok」）、再发一轮并取消、核对 _coda/wait；声明 loadSession 的再开进程 session/load
+
+  --agent <id>   只查这一个 Agent（面板不读）
+  --manifest     只查清单，什么也不运行
+  --live         查一轮：会真的发提示词，可能要登录、花额度
+  --prompt "…"   一轮用的提示词`;
+
+let options;
+try {
+  options = parseArgs({ allowPositionals: true, options: {
+    agent: { type: 'string' }, manifest: { type: 'boolean' }, live: { type: 'boolean' }, prompt: { type: 'string' }, help: { type: 'boolean', short: 'h' } } });
+} catch (e) { console.error(`${e.message}\n\n${USAGE}`); process.exit(2); }
+const { values, positionals } = options;
+if (values.help) { console.log(USAGE); process.exit(0); }
+if (positionals.length !== 1 || (values.manifest && values.live)) { console.error(USAGE); process.exit(2); }
+
+const dir = resolve(positionals[0]);
+const { report, plugin } = await checkPlugin(dir, { agent: values.agent ?? null, manifestOnly: !!values.manifest, live: !!values.live, prompt: values.prompt });
+const shown = positionals[0];
+console.log(format(report, { title: `coda-plugin-check ${pkg.version} · 插件 ${plugin?.id ?? '?'}（${shown}）· 规则抄自 Coda ${CODA_COMMIT.slice(0, 7)} · ACP 协议版本 ${ACP_PROTOCOL_VERSION}` }));
+console.log('权威校验仍是 Coda 的「读取来源」：提交后在「设置 › 插件 › 从仓库添加…」填仓库地址（或本机仓库的绝对路径）读一次，以它为准。');
+process.exit(report.ok ? 0 : 1);
