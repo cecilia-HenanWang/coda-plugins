@@ -73,8 +73,11 @@ describe('the plugins here', () => {
     test('finds what it uses in its own node_modules, as ES modules resolve from its directory', () => {
       const specifiers = [...new Set(files(dir).flatMap(file => [...readFileSync(file, 'utf8').matchAll(/(['"])((@[\w.-]+\/)?[\w.-]+(\/[\w./-]+)?)\1/g)]
         .map(m => m[2]).filter(s => used.some(name => s === name || s.startsWith(`${name}/`)))))];
-      const found = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
-        `console.log(JSON.stringify(${JSON.stringify(specifiers)}.map(s => import.meta.resolve(s))))`], { cwd: dir, encoding: 'utf8' }));
+      let found;
+      try {
+        found = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+          `console.log(JSON.stringify(${JSON.stringify(specifiers)}.map(s => import.meta.resolve(s))))`], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+      } catch (e) { assert.fail(`plugins/${id} 的依赖没装：在 plugins/${id} 里 npm ci，或 node scripts/install-plugins.mjs（${e.stderr?.match(/Cannot find package '[^']+'/)?.[0] ?? e.message}）`); }
       assert.ok(specifiers.length >= declared.length);
       for (const [i, url] of found.entries()) {
         const path = fileURLToPath(url);
