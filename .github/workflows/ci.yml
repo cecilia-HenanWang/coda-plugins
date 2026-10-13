@@ -14,8 +14,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            plugins/*/package-lock.json
       - run: npm ci
-      - name: 检查包自己的测试
+      - name: 插件的 npm 依赖（照 Coda 装版本目录的样子，在各插件目录里 npm ci）
+        run: node scripts/install-plugins.mjs
+      - name: 检查包与插件的测试
         run: npm test
       - name: 协议副本与检查包一致
         run: node scripts/sync-protocol.mjs --check
@@ -23,5 +28,5 @@ jobs:
         run: |
           for dir in templates/*/; do node bin/check.mjs "$dir" --live; done
           node bin/check.mjs templates/agent --live --prompt "wait 演示自主轮次"
-      - name: 插件：只查清单（CI 里没有各家的 CLI 与登录）
+      - name: 插件：只查清单（真握手与一轮要各家的 CLI 与登录，不在 CI 跑；入口用假的对端跑过的在 npm test 里）
         run: for dir in plugins/*/; do node bin/check.mjs "$dir" --manifest; done
