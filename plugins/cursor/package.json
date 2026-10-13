@@ -1,0 +1,30 @@
+{
+  "name": "cursor",
+  "displayName": "Cursor",
+  "description": "Cursor Agent：运行机上的 Cursor CLI 自己讲 ACP（cursor-agent acp），每个会话一个进程。",
+  "version": "1.0.0",
+  "contributes": {
+    "agents": [
+      {
+        "id": "cursor",
+        "displayName": "Cursor",
+        "icon": {
+          "light": "icons/cursor.pdf",
+          "template": true
+        },
+        "command": "c=\"$HOME/.local/bin/cursor-agent\"; [ -x \"$c\" ] || c=cursor-agent; exec \"$c\" acp",
+        "modes": {
+          "title": "工作模式",
+          "unset": "Agent 默认",
+          "note": "工具权限沿用运行机的 Cursor 配置（~/.cursor/cli-config.json）。"
+        },
+        "skillsDir": ".agents/skills",
+        "configFiles": [
+          "${CURSOR_CONFIG_DIR:-~/.cursor}/cli-config.json",
+          "${CURSOR_CONFIG_DIR:-~/.cursor}/acp-config.json"
+        ],
+        "setupHint": "请在运行机安装 Cursor CLI（curl https://cursor.com/install -fsS | bash）并运行 cursor-agent login。"
+      }
+    ]
+  }
+}
