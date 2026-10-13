@@ -4,7 +4,7 @@ Coda 的公开插件仓库，和给插件作者用的契约检查。Coda 自带�
 
 Coda 是一个多 Agent 客户端（Mac、iPhone 与运行在你机器上的后端）。Agent 与资源页的面板都以插件接入：
 插件是一个目录，清单就是它的 `package.json`（`contributes.agents`、`contributes.panels` 等，照 VS Code 扩展的写法）；
-Agent 讲 [ACP](https://agentclientprotocol.com)，外加 Coda 的等待项登记 `_coda/wait`，见 [接入协议](docs/agent-protocol.md)。
+Agent 讲 [ACP](https://agentclientprotocol.com)，外加 Coda 的 Agent 活动报告 `_coda/wait`，见 [接入协议](docs/agent-protocol.md)。
 
 ```
 plugins/codex/           Codex：入口在同一进程里运行锁定版本的 codex-acp（npm 依赖），面板「Codex」
@@ -14,7 +14,7 @@ plugins/grok/            Grok：只有清单，运行机上的 Grok CLI 自己�
 plugins/opencode/        OpenCode：只有清单，运行机上的 opencode acp
 plugins/codex-accounts/  Codex 多账号：接在 codex 的「账号来源」上，面板「Codex 多账号」（要 python3）
 plugins/cursor/          Cursor：只有清单，运行机上的 Cursor CLI 自己讲 ACP
-templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示等待项与自主轮次
+templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示 Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
@@ -72,7 +72,7 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 
 - `name` 是插件 ID：小写字母、数字和 `-`，以字母开头，至多 40 个字符；不能与 Coda 内置插件同名（`claude`、`codex`、`grok`、`kimi`、`opencode`、`review` 等，完整列表见 `check/coda.mjs`）。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
-- `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`；读不懂的键一律报错，不会被悄悄忽略。
+- `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`；读不懂的键一律报错，不会被悄悄忽略。
 
 **从仓库安装的限制**：带 npm 依赖（`dependencies`、`optionalDependencies`）就要把 `package-lock.json` 一起提交，Coda 在插件的版本目录里
 `npm ci`（较早的 Coda 不收带 npm 依赖的插件）；不能有符号链接或子模块；整个目录不超过 10 MiB（`node_modules` 不算，也不该提交）；
@@ -89,8 +89,11 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 | `modes` | 可省：`title`、`unset`、`note` 是模式选择的标题与说明；`auto`、`full` 是这个 Agent 的「自动审批」「全部放行」各是哪个 ACP 模式 |
 | `skillsDir`、`configFiles`、`setupHint` | 可省：Agent 在工作副本里找 skills 的目录；它读模型列表的配置文件（变了 Coda 重读）；用不了时给用户的一句话 |
 
-Agent 进程的环境是会话的环境再加：`CODA_NODE`（Coda 后端自己的 Node，插件自带的入口用它运行，不在 `PATH` 上）、`CODA_PLUGIN_PATH`（插件目录，从仓库装的是它钉住的版本目录）、
-`CODA_PLUGIN_STATE`（插件在这台机器上的状态目录，跨会话、跨版本保留）、`CODA_PLUGIN_EXTENSIONS`（别的插件接在它扩展点上的东西，没有就不设）。
+Agent 进程的环境是会话的环境再加插件进程的那组变量（面板与面板的动作、放在会话 `PATH` 上的命令也一样；继承来的同名变量先去掉，一个插件的进程拿不到别的插件的）：
+`CODA_NODE`（Coda 后端自己的 Node，插件自带的入口用它运行，不在 Agent 的 `PATH` 上）、`CODA_PLUGIN_PATH`（插件目录，从仓库装的是它钉住的版本目录）、
+`CODA_PLUGIN_STATE`（插件在这台机器上的状态目录，跨会话、跨版本保留）、`CODA_PLUGIN_SETTINGS`（插件设置的 JSON）、
+`CODA_PLUGIN_EXTENSIONS`（别的插件接在它扩展点上的东西，没有就不设）、`CODA_PLUGIN_DEPENDENCIES`（它依赖的插件的目录，没有就不设）、
+`CODA_ARBITER`（`1`：这是它所在实例自己的正式后端；动本机共享的东西前看它）。
 插件自带的入口只能用插件目录里的代码、Node 自带的模块与清单里声明的 npm 依赖。
 
 照 [接入协议](docs/agent-protocol.md) 实现，另外几条容易漏的：
@@ -100,7 +103,7 @@ Agent 进程的环境是会话的环境再加：`CODA_NODE`（Coda 后端自己�
 - 没登录时在 `initialize`、`session/new` 或 `session/load` 回 -32000，Coda 提示用户去登录。
 - `session/cancel` 后 30 秒内结束这一轮（`stopReason: "cancelled"`），否则 Coda 关掉它的进程组。
 - Coda 关会话是对 Agent 的进程组发 SIGTERM，0.8 秒后 SIGKILL：收到 SIGTERM 要尽快退出。
-- 一轮之外的审批与提问 Coda 一律拒绝，除非正有等待项在 `handling`（那是一轮自主轮次）。
+- 一轮之外的审批与提问 Coda 一律拒绝，除非正有活动在 `handling`（那是一轮自主轮次）。
 
 **面板**（`contributes.panels`，例子见 `templates/panel`）：`command` 用 `sh -c` 运行，标准输出是 `{ "items": [...] }`：
 
@@ -114,7 +117,8 @@ Agent 进程的环境是会话的环境再加：`CODA_NODE`（Coda 后端自己�
 | `error` | `text` |
 
 只在打开资源页或点「刷新」时读，30 秒没结束或输出超过 64 KiB 就停下；读不懂的键或类型算这次读取失败。`items` 为空的面板不显示。
-命令的环境有 `CODA_PLUGIN_PATH`、`CODA_PLUGIN_STATE`、`CODA_PLUGIN_SETTINGS`（插件设置的 JSON），`PATH` 最前面是 Coda 后端的 `node`；动作另有 `CODA_PANEL_ARGS`（按钮的 `args`）。
+命令的环境是后端的环境（不带会话 ID）加上插件进程的那组变量（同上），`PATH` 最前面是 Coda 后端的 `node`；`CODA_GROUPS_STATE` 是这一刻这个后端各并发组的占用与排队
+（`{now, groups}`）；动作另有 `CODA_PANEL_ARGS`（按钮的 `args`）。
 动作至多跑 10 分钟，成功后 Coda 立即重读面板。
 
 ## 契约检查
@@ -132,8 +136,8 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
-| 清单（总是） | 不要 | `package.json` 读得懂、ID 合法且不与内置的撞（本仓库 `plugins/<id>` 里的内置插件除外）；每个 Agent 字段齐全、`command` 一行、图标是不超过 32 KiB 的 PDF；面板声明；从仓库安装的限制，带 npm 依赖要有对得上的 `package-lock.json` |
-| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境给 `CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；`session/new` 给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板读一次，输出合格式 |
+| 清单（总是） | 不要 | `package.json` 读得懂、ID 合法且不与内置的撞（本仓库 `plugins/<id>` 里的内置插件除外）；每个 Agent 字段齐全、`command` 一行、图标是不超过 32 KiB 的 PDF；面板、组与命令的声明，Agent、组与命令不与内置插件的撞；从仓库安装的限制，带 npm 依赖要有对得上的 `package-lock.json` |
+| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境照 Coda 给插件进程的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`，依赖的插件在旁边目录里时给 `CODA_PLUGIN_DEPENDENCIES`），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；`session/new` 给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板读一次，输出合格式 |
 | 一轮（`--live`） | 要 | 发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明 `loadSession` 的，新开进程 `session/load` 要成功 |
 
 **取消后的 `stopReason` 怎么判**：检查发 `session/cancel` 时紧跟一个只会得到 -32601 的探测请求（`_codaCheck/barrier`）。Agent 按顺序读，

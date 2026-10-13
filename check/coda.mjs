@@ -4,8 +4,8 @@
 // commit, and test/protocol-copy.test.mjs keeps the two together).
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
-// The Coda commit these rules were copied from (coda-console/coda main, PR #1148).
-export const CODA_COMMIT = '2ba612048c7acec63969c3ac91264ed437cb320f';
+// The Coda commit these rules were copied from (coda-console/coda main, PR #1177).
+export const CODA_COMMIT = 'fda35b16d89b41b675787f30c8e98f8cabdad952';
 // The ACP version Coda speaks: the SDK's (backend/package.json pins @agentclientprotocol/sdk 1.4.0, as package.json here).
 export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
@@ -36,16 +36,30 @@ export function currentModel(session) {
   const model = session?.configOptions?.find?.(x => x?.category === 'model');
   return model?.currentValue ?? session?.models?.currentModelId;
 }
-// docs/agent-protocol.md「规则」3: a turn the user stops ends within this, or Coda closes the agent's process group.
+// docs/agent-protocol.md「Agent 活动」规则 3: a turn the user stops ends within this, or Coda closes the agent's process group.
 export const CANCEL_LIMIT = 30_000;
 // adapters/session-host.mjs `close`: Coda stops an agent with SIGTERM to its process group, and SIGKILL this long after.
 export const TERM_GRACE = 800;
-// application/service.mjs and option-cache.mjs: opening a session (initialize, session/new or session/load) may take this.
+// adapters/acp.mjs `open` and application/option-cache.mjs: opening a session (initialize, session/new or session/load) may take this.
 export const OPEN_LIMIT = 60_000;
 
-// ---- How Coda starts an agent (backend/src/domain/agents.mjs launch, adapters/session-host.mjs) ----
-// `sh -c` in its own process group, standard error unread, the session's environment plus these.
-export const agentEnv = ({ pluginDir, stateDir }) => ({ CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir, CODA_PLUGIN_STATE: stateDir });
+// ---- What every process Coda runs for a plugin is given (backend/src/domain/plugins.mjs pluginEnv, cleared) ----
+// Its agents', its panels' and the commands it brings alike: Coda's own Node, the plugin's directory, its state, its settings,
+// what is plugged into its points (none here: the checker installs nothing beside it), where the plugins it depends on are
+// (`dependencies`, by ID), and CODA_ARBITER only for an instance's own backend, which the checker is not. What a process
+// inherits is cleared of them first: it never takes another plugin's for its own.
+export const PLUGIN_VARIABLES = ['CODA_NODE', 'CODA_ARBITER', 'CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_EXTENSIONS',
+  'CODA_PLUGIN_DEPENDENCIES'];
+export const pluginEnv = ({ pluginDir, stateDir, settings = {}, dependencies = {} }) => ({ CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir,
+  CODA_PLUGIN_STATE: stateDir, CODA_PLUGIN_SETTINGS: JSON.stringify(settings),
+  ...(Object.keys(dependencies).length ? { CODA_PLUGIN_DEPENDENCIES: JSON.stringify(dependencies) } : {}) });
+export const cleared = base => Object.fromEntries(Object.entries(base).filter(([name]) => !PLUGIN_VARIABLES.includes(name)));
+// How Coda starts an agent (domain/agents.mjs launch, adapters/session-host.mjs): `sh -c` in its own process group, standard
+// error unread, the session's environment plus its plugin's.
+// A panel's command (application/panels.mjs env): no session's ID, the backend's `node` first on the PATH, and the
+// concurrency groups in use as it starts (`{ now, groups }`; none here).
+export const THREAD_ENV = 'CODA_THREAD_ID';
+export const groupsState = () => JSON.stringify({ now: Date.now(), groups: [] });
 
 // ---- Manifests (backend/src/domain/plugins.mjs, agent-plugins.mjs, panels.mjs, plugin-extensions.mjs) ----
 export const PLUGIN_ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -54,7 +68,12 @@ export const PANEL_ID = /^[a-z][a-z0-9-]{0,63}$/;
 export const POINT = /^[a-z][a-z0-9-]{0,39}$/;
 export const SETTING_KEY = /^[a-z][a-z0-9-]*(\.[a-z][A-Za-z0-9]*)+$/;
 export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
-export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups'];
+export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'commands'];
+// A command a plugin puts on every session's and step's PATH (`contributes.commands`): its name, as a shell finds it, which
+// may not be one of Coda's own; what runs for it, one line.
+export const COMMAND = /^[a-z][a-z0-9-]{0,39}$/;
+export const CODA_COMMANDS = ['gh', 'coda-run'];
+export const COMMAND_LIMIT = 4000;
 export const INSTRUCTIONS_LIMIT = 200;
 export const ICON_LIMIT = 32 * 1024;
 export const AGENT_LIMITS = { displayName: 40, modeTitle: 10, modeUnset: 20, modeNote: 100, modeId: 200, setupHint: 200, command: 4000, configFiles: 16, path: 1000 };
@@ -64,21 +83,23 @@ export const PANEL_LIMITS = { title: 40, command: 4000, confirm: 200, note: 200 
 export const SIZE_LIMIT = 10 * 1024 * 1024;
 export const SEGMENT = /^[A-Za-z0-9._-]+$/;
 export const DEPTH = 2;
+// A plugin's npm dependencies come with its package-lock.json, naming the same (manifestProblem): Coda installs them with
+// `npm ci` in the plugin's version directory.
 export const NPM = ['dependencies', 'optionalDependencies'];
+export const NPM_LOCK = 'package-lock.json';
 // The plugins Coda ships (backend/src/resources/plugins/): one from a repository may not take their names.
 export const BUILTIN_PLUGINS = ['approve-command', 'claude', 'cliproxy', 'codex', 'codex-accounts', 'develop', 'grok', 'host', 'human-check',
   'kimi', 'machine-stats', 'maintenance', 'opencode', 'review', 'secrets', 'testbed'];
-
-// ---- Ahead of CODA_COMMIT: the built-in agent plugins kept in this repository (#1069 第 4 步第二段) ----
-// Coda's copies of these are taken from `plugins/<id>` of this repository at a commit its lock file names, and a newer
-// version from the same place may be installed over a copy: only that source may take their names.
+// Those whose copies in Coda are taken from `plugins/<id>` of this repository (backend/src/resources/plugins.lock.json): a
+// version from the same repository and directory may be installed over a copy, and only that one may take their names
+// (builtinProblem; GitHub's repository by owner and name in any case, over any transport).
 export const BUILTIN_HERE = ['claude', 'codex', 'codex-accounts', 'grok', 'kimi', 'opencode'];
-export const BUILTIN_REPOSITORY = /(^|[/:])coda-console\/coda-plugins(\.git)?\/?$/;
-// A plugin's npm dependencies come with its package-lock.json: Coda installs them with `npm ci` in the plugin's version
-// directory, and cannot without one. (At CODA_COMMIT Coda still refuses npm dependencies.)
-export const NPM_LOCK = 'package-lock.json';
-// The agents they declare, by plugin, and `claude`, the agent ID sessions from before #1069 still store (docs/plugins.md「Agent」).
+export const BUILTIN_REPOSITORY = /(^|[/:])coda-console\/coda-plugins(\.git)?\/?$/i;
+// An agent, a concurrency group and a command are one plugin's (catalogProblem, claims). Those the built-in plugins declare, by
+// plugin; and `claude`, the agent ID sessions from before #1069 still store (docs/plugins.md「Agent」).
 export const BUILTIN_AGENTS = { 'claude-sdk': 'claude', codex: 'codex', grok: 'grok', kimi: 'kimi', opencode: 'opencode', claude: 'claude' };
+export const BUILTIN_GROUPS = { host: 'host' };
+export const BUILTIN_COMMANDS = { 'host-sim': 'host' };
 
 // ---- Panels (backend/src/domain/panels.mjs, application/panels.mjs) ----
 export const ITEM_TYPES = ['card', 'meter', 'stat', 'markdown', 'button', 'error'];

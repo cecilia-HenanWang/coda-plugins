@@ -17,7 +17,8 @@ export async function checkPlugin(dir, { agent: only = null, manifestOnly = fals
     if (agents.length || plugin.panels.length) report.scope('handshake').skip('options.manifest', '只查清单（--manifest）：不启动 Agent、不读面板');
     return { report, plugin };
   }
-  for (const agent of agents) await checkAgent({ agent, pluginDir, live, prompt, limits, say: level => report.scope(level, `Agent ${agent.id}`) });
-  if (!only) for (const panel of plugin.panels) await checkPanel({ panel, pluginDir, settings: plugin.settings, say: report.scope('handshake', `面板 ${panel.id}`) });
+  const { settings, dependencies } = plugin;
+  for (const agent of agents) await checkAgent({ agent, pluginDir, settings, dependencies, live, prompt, limits, say: level => report.scope(level, `Agent ${agent.id}`) });
+  if (!only) for (const panel of plugin.panels) await checkPanel({ panel, pluginDir, settings, dependencies, say: report.scope('handshake', `面板 ${panel.id}`) });
   return { report, plugin };
 }

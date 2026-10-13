@@ -13,7 +13,7 @@ test('a copy from another commit, of another version, or edited by hand does not
   assert.match(checkCopy(copy.replace(/coda-commit: \w+/, `coda-commit: ${'0'.repeat(40)}`)).join('\n'), /两边对不上/);
   assert.match(checkCopy(copy.replace('acp-protocol-version: 1', 'acp-protocol-version: 2')).join('\n'), /ACP 协议版本 2/);
   assert.match(checkCopy(copy.replace('acp-sdk: 1.4.0', 'acp-sdk: 1.5.0')).join('\n'), /SDK 1\.5\.0/);
-  assert.match(checkCopy(copy.replace('等待项登记', '等待登记')).join('\n'), /正文被改过/);
+  assert.match(checkCopy(copy.replace('Agent 活动报告', 'Agent 活动登记')).join('\n'), /正文被改过/);
   assert.deepEqual(checkCopy('# 没有声明'), ['副本开头没有同步脚本写的声明']);
 });
 test('links into Coda keep their words; links within the text and to the web stay', () => {

@@ -1,13 +1,15 @@
 // The manifest level: what Coda reads of a plugin's directory before anything of it runs. The declaration rules are
 // copied from Coda's readPlugin (backend/src/domain/plugins.mjs) and the modules it calls (agent-plugins.mjs, panels.mjs,
-// plugin-extensions.mjs), what a plugin from a repository may not be from plugin-sources.mjs; check/coda.mjs names the
+// plugin-extensions.mjs), what a plugin from a repository may not be from plugin-sources.mjs (treeProblem, manifestProblem,
+// catalogProblem); check/coda.mjs names the
 // commit. Coda stops at the first thing it cannot read; here each part is checked on its own, so one run lists them all.
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_HERE, BUILTIN_PLUGINS, BUILTIN_REPOSITORY, CAPABILITY, CONTRIBUTES, DEPTH, ICON_LIMIT,
-  INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT, SEGMENT, SETTING_KEY, SIZE_LIMIT } from './coda.mjs';
+import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_PLUGINS, BUILTIN_REPOSITORY, CAPABILITY,
+  CODA_COMMANDS, COMMAND, COMMAND_LIMIT, CONTRIBUTES, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
+  SEGMENT, SETTING_KEY, SIZE_LIMIT } from './coda.mjs';
 
 class Invalid extends Error {}
 const check = (condition, message) => { if (!condition) throw new Invalid(message); };
@@ -205,7 +207,8 @@ function remotes(top) {
   try { return execFileSync('git', ['-C', top, 'remote', '-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').map(l => l.split(/\s+/)[1]).filter(Boolean); }
   catch { return []; }
 }
-// Why npm could not install from the lock file next to the manifest (`npm ci` refuses a lock that does not match), or null.
+// Why npm could not install from the lock file next to the manifest (`npm ci` refuses a lock that does not match; Coda's
+// manifestProblem refuses it first), or null.
 function lockProblem(dir, manifest) {
   let lock;
   try { lock = JSON.parse(readFileSync(join(dir, NPM_LOCK), 'utf8')); } catch (e) { return `${NPM_LOCK} 读不了：${e.message}`; }
@@ -228,7 +231,11 @@ export function checkManifest(dir, say) {
   try { manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); }
   catch (e) { say.fail('manifest.read', `没有可读的 package.json：${e.message}`); return null; }
   const part = (rule, fn, passed) => {
-    try { const value = fn(); if (passed) say.pass(rule, typeof passed === 'function' ? passed(value) : passed); return value; }
+    try {
+      const value = fn(), message = typeof passed === 'function' ? passed(value) : passed;
+      if (message) say.pass(rule, message);
+      return value;
+    }
     catch (e) { if (!(e instanceof Invalid)) throw e; say.fail(rule, e.message); return undefined; }
   };
   const { top, entries } = files(dir);
@@ -278,12 +285,28 @@ export function checkManifest(dir, say) {
     const value = contributes.instructions;
     check(value === undefined || (typeof value === 'string' && value.trim() && [...value].length <= INSTRUCTIONS_LIMIT), `contributes.instructions 须为不超过 ${INSTRUCTIONS_LIMIT} 字的说明`);
   });
-  part('manifest.groups', () => {
+  // A group and a command are one plugin's, as an agent is (plugin-sources.mjs catalogProblem): those of the built-in plugins
+  // are taken.
+  const taken = (what, value, builtin) => builtin[value] && builtin[value] !== name ? `${what} ${value} 已由内置插件 ${builtin[value]} 声明，换一个名字` : null;
+  const groups = part('manifest.groups', () => {
     const groups = contributes.groups ?? [];
-    check(Array.isArray(groups) && groups.every(g => g && typeof g === 'object' && typeof g.name === 'string' && /^\S{1,100}$/.test(g.name)
-      && settings[g.capacity]?.type === 'integer') && new Set(groups.map(g => g.name)).size === groups.length,
+    check(Array.isArray(groups) && groups.every(g => g && typeof g === 'object' && Object.keys(g).every(k => ['name', 'capacity'].includes(k))
+      && typeof g.name === 'string' && /^\S{1,100}$/.test(g.name) && settings[g.capacity]?.type === 'integer')
+      && new Set(groups.map(g => g.name)).size === groups.length,
     'contributes.groups 须为 { name, capacity } 的数组：name 为 1–100 个非空白字符、不重复，capacity 是本插件声明的整数设置');
-  });
+    return groups;
+  }, groups => groups.length ? `并发组 ${groups.map(g => g.name).join('、')}` : null) ?? [];
+  const commands = part('manifest.commands', () => {
+    const commands = contributes.commands ?? [];
+    check(Array.isArray(commands) && commands.every(c => c && typeof c === 'object' && Object.keys(c).every(k => ['name', 'command'].includes(k))
+      && typeof c.name === 'string' && COMMAND.test(c.name) && !CODA_COMMANDS.includes(c.name)
+      && typeof c.command === 'string' && c.command.trim() && c.command.length <= COMMAND_LIMIT && !/[\0\r\n]/.test(c.command))
+      && new Set(commands.map(c => c.name)).size === commands.length,
+    `contributes.commands 须为 { name, command } 的数组：name 是命令名（小写字母、数字和「-」，以字母开头，不重复，不能是 Coda 自己的 ${CODA_COMMANDS.join('、')}），command 是一行命令`);
+    return commands;
+  }, commands => commands.length ? `会话 PATH 上的命令 ${commands.map(c => c.name).join('、')}` : null) ?? [];
+  for (const g of groups) { const problem = taken('组', g.name, BUILTIN_GROUPS); if (problem) say.fail('manifest.claims', problem); }
+  for (const c of commands) { const problem = taken('命令', c.name, BUILTIN_COMMANDS); if (problem) say.fail('manifest.claims', problem); }
 
   const panels = part('manifest.panels', () => {
     if (contributes.panels === undefined) return [];
@@ -316,6 +339,9 @@ export function checkManifest(dir, say) {
     });
   }
 
+  // Where the plugins it depends on are, as its processes are told (CODA_PLUGIN_DEPENDENCIES): here a directory beside it
+  // that is that plugin, as one of the same commit Coda would install with it.
+  const dependencies = {};
   part('manifest.extensions', () => {
     const deps = manifest.extensionDependencies;
     check(deps === undefined || (Array.isArray(deps) && deps.every(d => typeof d === 'string' && PLUGIN_ID.test(d)) && new Set(deps).size === deps.length),
@@ -338,7 +364,14 @@ export function checkManifest(dir, say) {
         object(value, where); keys(value, ['command'], where); line(value.command, 4000, `${where} 的 command`);
       }
     }
-    if (deps?.length) say.info('manifest.extensions', `依赖 ${deps.join('、')}：Coda 装它时先装它们（这台机器的插件，或同一提交里的兄弟目录）`);
+    if (!deps?.length) return;
+    for (const dep of deps) {
+      const beside = join(dir, '..', dep);
+      try { if (JSON.parse(readFileSync(join(beside, 'package.json'), 'utf8')).name === dep) dependencies[dep] = realpathSync(beside); } catch {}
+    }
+    const missing = deps.filter(d => !dependencies[d]);
+    say.info('manifest.extensions', `依赖 ${deps.join('、')}：Coda 装它时先装它们（这台机器的插件，或同一提交里的兄弟目录），它的进程从 CODA_PLUGIN_DEPENDENCIES 拿到它们的目录${missing.length
+      ? `；${missing.join('、')} 不在旁边，检查时不带` : ''}`);
   });
 
   // npm dependencies are installed from the lock file Coda takes with the rest of the commit.
@@ -368,5 +401,5 @@ export function checkManifest(dir, say) {
   if (!top) say.info('source.git', '目录不在 Git 仓库里：按目录里的文件检查，提交后以 Coda 读到的为准');
 
   const defaults = Object.fromEntries(Object.entries(settings).map(([key, spec]) => [key, spec.default ?? (spec.entries ? {} : null)]));
-  return { id: name, manifest, agents, panels, settings: defaults, path: path?.join('/') ?? null };
+  return { id: name, manifest, agents, panels, settings: defaults, dependencies, path: path?.join('/') ?? null };
 }
