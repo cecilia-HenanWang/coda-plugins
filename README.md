@@ -45,6 +45,9 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 
 ### Codex 账号与额度
 
+`codex` 与 `codex-accounts` 是两个独立插件：Codex Agent 由 Coda 默认安装；多账号插件需用户在「设置 › 插件」主动安装。
+仅随 Coda 提供插件目录不代表启用。未安装多账号插件时保留 Codex 原生登录与额度看板，安装后由多账号插件接管，卸载后恢复。
+
 `codex-accounts` 2.0.0 自己管理账号，不需要预装账号管理器或 Python。安装时 Coda 安装它的 npm 依赖和
 `codex` 插件；本版接管额度、登录入口和续期通知的配套入口是 `codex` 1.1.0。已有安装升级时两个插件一起更新，
 Coda 内置副本同步时也一起带上这两个目录。
