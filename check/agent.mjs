@@ -10,13 +10,17 @@ import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
 import { Waits } from './waits.mjs';
 
-// `exit`: how long an agent may take to go after SIGTERM, or after its input ends. `pause`: a quiet moment between two
-// turns, as between two messages of a person, for what an agent says after a turn to be heard outside it. `term`: how long
-// Coda's session host waits after SIGTERM before SIGKILL.
-export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, pause: 500, term: TERM_GRACE };
+// `exit`: how long an agent may take to go after SIGTERM, or after its input ends. `cancelReply`: how soon a turn whose work
+// was done answers once it has read the cancel. `pause`: a quiet moment between two turns, as between two messages of a
+// person, for what an agent says after a turn to be heard outside it. `term`: how long Coda's session host waits after
+// SIGTERM before SIGKILL.
+export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, cancelReply: 5_000,
+  pause: 500, term: TERM_GRACE };
 // A request of the checker's own, sent right behind a `session/cancel`; nothing answers it but an error (Method not found).
 // The agent reads it after the cancel, so its answer is written after the agent has read the cancel.
 export const BARRIER = '_codaCheck/barrier';
+// What an agent says of a session rather than does in a turn: what it says of these after a cancel is no work.
+const BOOKKEEPING = new Set(['available_commands_update', 'current_mode_update', 'config_option_update', 'session_info_update', 'usage_update']);
 const secs = ms => (ms / 1000).toFixed(1);
 const short = (text, max = 80) => (text.length > max ? `${text.slice(0, max)}…` : text).replace(/\s+/g, ' ');
 
@@ -84,6 +88,7 @@ class Session {
     if (turn) {
       turn.updates++;
       if (kind === 'agent_message_chunk' && params.update.content?.type === 'text') turn.text += params.update.content.text;
+      if (turn.barrier?.answered && !BOOKKEEPING.has(kind)) turn.workAfterCancel.push(kind);
     }
   }
   wait(params) {
@@ -164,12 +169,13 @@ class Session {
     return 'ok';
   }
   // One turn of Coda's: `session/prompt` with an ID of Coda's choosing, as AcpSession.prompt sends it. With `cancel`, stopped
-  // after the agent first says something, or `cancelDelay` after it was sent; the barrier behind the cancel tells a reply
-  // written before the agent read the cancel (`readCancel` false) from one written after (true).
+  // after the agent first says something, or `cancelDelay` after it was sent; the barrier behind the cancel tells what the
+  // agent said and did before it read the cancel from what it said and did after (`workAfterCancel`, `readCancel`).
   async prompt(text, { cancel = false } = {}) {
-    const say = this.say.live, id = randomUUID(), turn = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, readCancel: false };
+    const say = this.say.live, id = randomUUID();
+    const turn = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, workAfterCancel: [], readCancel: false, replied: null };
     const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text }] },
-      { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = turn.barrier?.answered ?? false; this.turn = null; this.track(); } });
+      { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = !!turn.barrier?.answered; turn.replied = Date.now(); this.turn = null; this.track(); } });
     reply.catch(() => { if (this.turn === turn) { this.turn = null; this.track(); } });
     let cancelledAt = null;
     if (cancel) {
@@ -178,8 +184,8 @@ class Session {
         cancelledAt = Date.now();
         this.proc.notify('session/cancel', { sessionId: this.sessionId });
         // Taken as it is read, in order with the reply to the turn (`onReply`, not a promise's callback, which comes later).
-        const barrier = turn.barrier = { answered: false };
-        this.proc.request(BARRIER, {}, { timeout: this.limits.cancel, onReply: () => { barrier.answered = true; } }).catch(() => {});
+        const barrier = turn.barrier = { answered: null };
+        this.proc.request(BARRIER, {}, { timeout: this.limits.cancel, onReply: () => { barrier.answered = Date.now(); } }).catch(() => {});
       }
     }
     let m, timer;
@@ -203,10 +209,14 @@ class Session {
     } else if (!cancelledAt) say.info('live.cancel', `第二轮在取消前就结束了（stopReason ${stop}），取消没机会生效`);
     else {
       say.pass('live.cancel', `session/cancel 后 ${secs(Date.now() - cancelledAt)} 秒结束，stopReason ${stop}`);
-      // A reply already on its way as the cancel went out is no refusal to stop: the turn had ended. One written once the
-      // cancel was read is: ACP wants `cancelled` then.
-      if (stop !== 'cancelled' && turn.readCancel) say.fail('live.cancel-reason', `读到 session/cancel 之后这一轮回的 stopReason 是 ${stop}（紧跟取消发的探测请求先得到了答复）：ACP 要求回 cancelled；Coda 按回的记，这一轮成了正常结束而不是已停止`);
-      else if (stop !== 'cancelled') say.info('live.cancel-reason', `这一轮回了 stopReason ${stop}，但答复写出时还没读到 session/cancel（它先于紧跟取消发的探测请求的答复）：取消送到前这一轮已经结束，不算没停`);
+      // A turn that goes on once it has read the cancel — says or does more, or answers only a while later — and then does not
+      // say `cancelled` would not stop. One that had ended does not have to: its answer was on its way as the cancel went out,
+      // or its work was done and it answers at once (Coda's own Codex entry, waiting on a title, says end_turn then).
+      const after = turn.workAfterCancel, late = turn.readCancel && turn.replied - turn.barrier.answered > this.limits.cancelReply;
+      if (stop !== 'cancelled' && (after.length || late)) say.fail('live.cancel-reason', `读到 session/cancel 之后这一轮${after.length
+        ? `还在接着做（又发了 ${after.length} 条 session/update：${[...new Set(after)].join('、')}）` : `又过了 ${secs(turn.replied - turn.barrier.answered)} 秒才答复`}，最后回 stopReason ${stop}：ACP 要求停下并回 cancelled；Coda 按回的记，这一轮成了正常结束而不是已停止`);
+      else if (stop !== 'cancelled') say.info('live.cancel-reason', `这一轮回了 stopReason ${stop}：${turn.readCancel
+        ? '读到 session/cancel 时它已经做完（之后没再做什么，随即答复）' : '答复写出时还没读到 session/cancel（先于紧跟取消发的探测请求的答复）'}，取消送到前这一轮已经结束，不算没停`);
     }
     return stop;
   }

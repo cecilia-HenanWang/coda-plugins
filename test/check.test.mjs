@@ -15,7 +15,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const at = path => join(root, path);
 const LIAR = at('test/fixtures/liar.mjs'), ICON = at('templates/agent/icons/echo.pdf');
 // Short enough for a test, long enough for the templates.
-const limits = { turn: 10_000, settle: 6_000, cancel: 2_000, exit: 1_000 };
+const limits = { turn: 10_000, settle: 6_000, cancel: 2_000, exit: 1_000, cancelReply: 1_000 };
 const temps = [];
 after(() => { for (const dir of temps) rmSync(dir, { recursive: true, force: true }); });
 
@@ -92,7 +92,8 @@ describe('a liar fails on the rule it breaks', () => {
     ['after-terminal', 'wait.after-terminal', { live: true }],
     ['permission-outside', 'request.outside-turn', { live: true }],
     ['ignore-cancel', 'live.cancel', { live: true }],
-    ['cancel-end-turn', 'live.cancel-reason', { live: true }],
+    ['keep-going', 'live.cancel-reason', { live: true }],
+    ['slow-end-turn', 'live.cancel-reason', { live: true }],
     ['ignore-sigterm', 'handshake.sigterm', {}],
     ['load-fails', 'handshake.load', { live: true }],
   ];
@@ -133,12 +134,14 @@ describe('a liar fails on the rule it breaks', () => {
     assertPasses(report, ['handshake.sigterm']);
     assert.ok(rules(report, 'warn').includes('handshake.sigterm-slow'));
   });
-  test('a reply already on its way as the cancel goes out is not a turn that would not stop', async () => {
-    const { report } = await checkPlugin(plugin({ mode: 'reply-in-flight' }), { live: true, limits });
-    assert.deepEqual(failed(report), []);
-    const said = report.items.find(item => item.rule === 'live.cancel-reason');
-    assert.equal(said?.status, 'info', JSON.stringify(report.items, null, 1));
-    assert.match(said.message, /还没读到 session\/cancel/);
+  test('a reply on its way as the cancel goes out, or one whose turn was done as it read the cancel, is not a turn that would not stop', async () => {
+    for (const [mode, words] of [['reply-in-flight', /还没读到 session\/cancel/], ['late-end-turn', /读到 session\/cancel 时它已经做完/]]) {
+      const { report } = await checkPlugin(plugin({ mode }), { live: true, limits });
+      assert.deepEqual(failed(report), [], mode);
+      const said = report.items.find(item => item.rule === 'live.cancel-reason');
+      assert.equal(said?.status, 'info', JSON.stringify(report.items, null, 1));
+      assert.match(said.message, words);
+    }
   });
   test('a subagent without its session and a timer without its time are taken by Coda: worth a look', async () => {
     for (const [mode, rule] of [['subagent-no-child', 'wait.subagent-child'], ['timer-no-at', 'wait.timer-at']]) {

@@ -46,8 +46,14 @@ const methods = {
     // The second turn, the one the checker stops, never ends.
     if (mode === 'ignore-cancel' && !first) await new Promise(() => {});
     say(sessionId, 'ok');
-    // It reads the cancel, and what comes after it, and says it ended as if it had not.
-    if (mode === 'cancel-end-turn' && !first) { await new Promise(resolve => { afterCancel = resolve; }); return { stopReason: 'end_turn' }; }
+    // It reads the cancel, and what comes after it: it goes on and says it ended; it waits, and says it ended; or it had done
+    // all it had to and says so at once (as Codex does, its reply held back by a title).
+    if (['keep-going', 'slow-end-turn', 'late-end-turn'].includes(mode) && !first) {
+      await new Promise(resolve => { afterCancel = resolve; });
+      if (mode === 'keep-going') say(sessionId, '还在说');
+      if (mode === 'slow-end-turn') await new Promise(resolve => setTimeout(resolve, 1500));
+      return { stopReason: 'end_turn' };
+    }
     // Its answer is written before it reads the cancel the checker sends as it hears the `ok`: it is busy until then.
     if (mode === 'reply-in-flight' && !first) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); return { stopReason: 'end_turn' }; }
     return { stopReason: me.cancelled ? 'cancelled' : 'end_turn' };
