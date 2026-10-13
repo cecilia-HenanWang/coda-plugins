@@ -76,6 +76,10 @@ Coda 内置副本同步时也一起带上这两个目录。
 原 Codex 登录入口的委托，并自行提供额度面板。Codex 把自己的依赖目录通过 `CODA_PLUGIN_DEPENDENCIES.codex`
 交给来源，来源与面板使用同一份 Codex CLI。
 
+Codex 插件在 ACP 出口把 codex-acp 错误 `data.message`、`data.details` 或字符串 `data` 中的原因补进标准 `error.message`，
+详情裁掉两端空白并去重，错误码、请求 ID 与原始 `data` 保留。Coda 和其他 ACP 客户端直接显示 `message` 即可；
+这层适配由插件维护，客户端无需理解 codex-acp 的内部错误格式。
+
 ### 升级 Agent 的 CLI 与 SDK
 
 Codex 会话、面板与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@openai/codex`；Claude 的是 `claude` 插件依赖的

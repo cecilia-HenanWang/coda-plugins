@@ -2,6 +2,7 @@
 // A minimal Codex app-server for driving the real codex-acp. The first turn of a state
 // directory dies mid-turn with exit code 0, as a terminated app-server does; later turns complete.
 // FAKE_CODEX_MODEL_ERROR instead returns a model-service error of that kind (`codexErrorInfo`) on that first turn.
+// FAKE_CODEX_RPC_ERROR_METHOD fails that native method before it starts, with FAKE_CODEX_RPC_ERROR as its explanation.
 // A later turn whose input names `subagent` runs a subagent that answers and ends; one that names `background` leaves a
 // command in the background, listed until it is terminated.
 import { existsSync, writeFileSync } from 'node:fs';
@@ -27,6 +28,10 @@ process.stdin.on('data', chunk => {
   for (let end; (end = buffer.indexOf('\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
     if (message.id === undefined || !message.method) continue;
+    if (message.method === process.env.FAKE_CODEX_RPC_ERROR_METHOD && (message.method !== 'turn/start' || !existsSync(died))) {
+      writeFileSync(died, '');
+      send({ id: message.id, error: { code: -32603, message: process.env.FAKE_CODEX_RPC_ERROR } }); continue;
+    }
     if (message.method === 'thread/backgroundTerminals/list') { send({ id: message.id, result: { data: terminals, nextCursor: null } }); continue; }
     if (message.method === 'thread/backgroundTerminals/terminate') {
       const terminated = terminals.some(t => t.processId === message.params.processId);
