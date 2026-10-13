@@ -4,6 +4,9 @@
   "description": "让 Codex 使用 codex-account 管理器里的账号：资源页的「Codex 多账号」面板列出每个账号的额度，可切换使用、使用完全重置；会话在开始时和两轮之间换到所选的账号。读管理器需要 Python 3。",
   "version": "1.0.0",
   "extensionDependencies": ["codex"],
+  "dependencies": {
+    "@openai/codex": "0.159.2"
+  },
   "contributes": {
     "extensions": {
       "codex/account-source": {

@@ -3,6 +3,15 @@
   "displayName": "Codex",
   "description": "Codex Agent：Coda 自带的入口在同一进程里运行锁定版本的 codex-acp，把子 Agent 与后台命令报成等待项；资源页的「Codex」面板显示本机登录的额度，可从 Coda 登录、使用完全重置。",
   "version": "1.0.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.12.0",
+    "@openai/codex": "0.159.2"
+  },
+  "overrides": {
+    "@agentclientprotocol/codex-acp": {
+      "@openai/codex": "$@openai/codex"
+    }
+  },
   "contributes": {
     "agents": [
       {
