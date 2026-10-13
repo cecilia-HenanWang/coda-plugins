@@ -16,7 +16,7 @@ import { networkedCodexDevelopment } from './network.mjs';
 import { codexOptionsAsShown } from './options.mjs';
 import { input, listen, relayedCodexStreams } from './relay.mjs';
 import { CodexWaits } from './waits.mjs';
-import { explainCodexError } from './errors.mjs';
+import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 
 const env = process.env;
 // A session starts read-only, unless its machine's configuration says otherwise.
@@ -48,6 +48,6 @@ const adapter = new URL(import.meta.resolve('@agentclientprotocol/codex-acp'));
 registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
-  return { ...loaded, source: codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8'))))))) };
+  return { ...loaded, source: reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8')))))))) };
 } });
 await import(adapter.href);

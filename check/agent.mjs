@@ -2,9 +2,10 @@
 // agent's command the way Coda does, says what Coda says, and holds what the agent says to ACP's schema and to
 // docs/agent-protocol.md. Where Coda would quietly drop or refuse something, the check fails and says what Coda does.
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, TERM_GRACE, cleared, clientCapabilities, currentModel, pluginEnv } from './coda.mjs';
+import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, TERM_GRACE, RETRY_DELAYS, continuationPrompt, serviceFailure, cleared, clientCapabilities, currentModel, pluginEnv } from './coda.mjs';
 import { temporary } from './leftovers.mjs';
 import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
@@ -15,7 +16,7 @@ import { Waits } from './waits.mjs';
 // person, for what an agent says after a turn to be heard outside it. `term`: how long Coda's session host waits after
 // SIGTERM before SIGKILL.
 export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, cancelReply: 5_000,
-  pause: 500, term: TERM_GRACE };
+  pause: 500, term: TERM_GRACE, retryDelays: RETRY_DELAYS };
 // A request of the checker's own, sent right behind a `session/cancel`; nothing answers it but an error (Method not found).
 // The agent reads it after the cancel, so its answer is written after the agent has read the cancel.
 export const BARRIER = '_codaCheck/barrier';
@@ -175,7 +176,7 @@ class Session {
   // One turn of Coda's: `session/prompt` with an ID of Coda's choosing, as AcpSession.prompt sends it. With `cancel`, stopped
   // after the agent first says something, or `cancelDelay` after it was sent; the barrier behind the cancel tells what the
   // agent said and did before it read the cancel from what it said and did after (`workAfterCancel`, `readCancel`).
-  async prompt(text, { cancel = false } = {}) {
+  async prompt(text, { cancel = false, attempt = 0, accepted = false } = {}) {
     const say = this.say.live, id = randomUUID();
     const turn = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, workAfterCancel: [], readCancel: false, replied: null };
     const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text }] },
@@ -203,7 +204,17 @@ class Session {
         : `这一轮没有结束：${e.message}`);
       return null;
     } finally { clearTimeout(timer); }
-    if (m.error) { say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 回了错误 ${m.error.code}：${m.error.message}（Coda 把这一轮记为失败）`); return null; }
+    if (m.error) {
+      const failure = serviceFailure(m.error), wait = this.limits.retryDelays[attempt];
+      if (!cancel && !text.startsWith('/') && failure && wait !== undefined) {
+        say.info('live.service-retry', `服务暂不可用，按 Coda 策略 ${secs(wait)} 秒后第 ${attempt + 1} 次重试`);
+        await delay(wait);
+        accepted ||= failure.input === 'accepted';
+        return this.prompt(accepted ? continuationPrompt : text, { attempt: attempt + 1, accepted });
+      }
+      say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 回了错误 ${m.error.code}：${m.error.message}（Coda 把这一轮记为失败）`);
+      return null;
+    }
     const parsed = schemas.zPromptResponse.safeParse(m.result);
     if (!parsed.success) { say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 的结果不合 ACP schema：${explain(parsed.error)}`); return null; }
     const stop = m.result.stopReason;

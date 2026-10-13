@@ -1,16 +1,16 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: fda35b16d89b41b675787f30c8e98f8cabdad952
+  coda-commit: 2daa577d23f0aae62efbd563bcb715fa9853c743
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 9d465f241e0a095628b2fd85ffc2a965297ed10273e9014653285fd151f5477b
+  body-sha256: 336a764bf18e8f9100a1c861aeeccdc846e006542b78315be4e13c0ad60b7331
 -->
 # Agent 接入协议
 
 > 这是 Coda 接入协议正文的公开副本（Coda 主仓库不公开），同步自它的 docs/agent-protocol.md。指向 Coda 其他文档的链接在副本里只留文字。
 
-Coda 用 [ACP](https://agentclientprotocol.com)（Agent Client Protocol）接 Agent，外加一条扩展：Agent 把自己在一轮之外还在进行的东西告诉 Coda
-（Agent 活动报告，`_coda/wait`）。本文是这份协议的唯一正文，写给要让一个 Agent（比如 Cursor 的）接入 Coda 的人：照它实现，
+Coda 用 [ACP](https://agentclientprotocol.com)（Agent Client Protocol）接 Agent，另收 Agent 活动报告（`_coda/wait`）和服务故障事实
+（ACP 错误数据里的 `_meta.coda.failure`）。本文是这份协议的唯一正文，写给要让一个 Agent（比如 Cursor 的）接入 Coda 的人：照它实现，
 Coda 就知道这个 Agent 在一轮之外还在做什么，如实显示、不回收它的进程，把它处理这些东西时的输出、审批和提问放进正确的一轮，
 并把它之后说的作为补交交回正确的调用。产品上这些规则的来由见会话行为契约与完成唤醒契约。
 
@@ -53,6 +53,27 @@ ACP 只允许在一轮（`session/prompt`）进行时交互。Agent 在两轮之
   同一模型下 Agent 报的值，两样都不知道就不改。Agent 自己改的 Coda 不去改回；用户在会话里用命令改的（如 Codex 的 `/fast`）记进会话设置。名字与说明照 Agent 给的显示。
 - **未登录**：Agent 在 `initialize`、`session/new` 或 `session/load` 回错误 -32000（ACP 的 `auth_required`）时，Coda 告诉用户这个 Agent 未登录，
   到「资源」里添加（面板的登录）；Coda 不调用 `authenticate`，也不按错误文字猜。
+
+## 服务暂不可用
+
+插件负责识别服务端临时故障；**重试策略归 Coda**，不依赖 Agent 名字、错误文字或私有上游错误码。
+`session/prompt` 的 JSON-RPC 错误可以在 `error.data._meta.coda.failure` 中报告：
+
+```json
+{"jsonrpc":"2.0","id":"prompt-1","error":{"code":-32603,"message":"服务暂不可用","data":{"_meta":{"coda":{"failure":{"kind":"service_unavailable","input":"accepted"}}}}}}
+```
+
+- `kind: service_unavailable`：服务端暂时无法处理；额度耗尽、未登录、配置或参数错误不得这样报告。
+- `input: accepted`：输入已经进入原生会话；故障回执确认本次原生执行已结束。Coda 在同一会话发送从已有进度继续的指令。
+- `input: not_accepted`：明确拒绝，输入尚未进入原生会话，也没有执行它的操作。Coda 重新投递相同内容与附件；一旦本轮有过 `accepted`，后续都只续跑。
+
+输入是否被接收或执行是否已结束无法确定时，不带此标记。错误文字始终放在标准 `error.message`；其他 ACP 客户端可以忽略扩展。
+Agent 自己仍在重连或重试时，不得提前返回本次 `session/prompt` 的失败；Coda 只在失败回执后安排重试。
+
+Coda 统一按 15、30、60 秒退避，每个任务轮次最多重试三次，沿用原生会话、执行设置、原输入与任务轮次身份，
+每次 ACP 请求使用新 ID。等待中保持执行状态，可随时停止；斜杠命令不自动重试。次数耗尽或遇到未标记错误时结束并保留最后原因。
+重试次数、截止时间与发送身份持久化；后端重启接回原托管后继续等待，已发出的请求从日志认领，不重复发送。
+连接丢失、进程退出或没有投递证据不视为这类服务故障；整机中断的恢复另按会话契约处理。
 
 ## Agent 活动
 

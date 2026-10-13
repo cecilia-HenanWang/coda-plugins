@@ -5,7 +5,7 @@
 // FAKE_CODEX_RPC_ERROR_METHOD fails that native method before it starts, with FAKE_CODEX_RPC_ERROR as its explanation.
 // A later turn whose input names `subagent` runs a subagent that answers and ends; one that names `background` leaves a
 // command in the background, listed until it is terminated.
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const died = join(process.env.FAKE_CODEX_STATE, 'died');
@@ -28,6 +28,7 @@ process.stdin.on('data', chunk => {
   for (let end; (end = buffer.indexOf('\n')) >= 0;) {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
     if (message.id === undefined || !message.method) continue;
+    if (message.method === 'turn/start') appendFileSync(join(process.env.FAKE_CODEX_STATE, 'prompts.ndjson'), JSON.stringify(message.params) + '\n');
     if (message.method === process.env.FAKE_CODEX_RPC_ERROR_METHOD && (message.method !== 'turn/start' || !existsSync(died))) {
       writeFileSync(died, '');
       send({ id: message.id, error: { code: -32603, message: process.env.FAKE_CODEX_RPC_ERROR } }); continue;
@@ -45,10 +46,10 @@ process.stdin.on('data', chunk => {
     if (!existsSync(died)) {
       writeFileSync(died, '');
       if (process.env.FAKE_CODEX_MODEL_ERROR) {
-        const error = { message: JSON.stringify({ type: 'error', error: { message: "model 'gpt-6.1-sol' is not enabled in rustponsesapi",
+        const error = { message: process.env.FAKE_CODEX_MODEL_MESSAGE ?? JSON.stringify({ type: 'error', error: { message: "model 'gpt-6.1-sol' is not enabled in rustponsesapi",
           type: 'invalid_request_error', param: null, code: null }, status: 400 }),
-        codexErrorInfo: process.env.FAKE_CODEX_MODEL_ERROR, additionalDetails: null };
-        send({ method: 'error', params: { threadId: thread.id, turnId: turn.id, willRetry: false, error } });
+        codexErrorInfo: process.env.FAKE_CODEX_MODEL_ERROR.startsWith('{') ? JSON.parse(process.env.FAKE_CODEX_MODEL_ERROR) : process.env.FAKE_CODEX_MODEL_ERROR, additionalDetails: null };
+        if (!process.env.FAKE_CODEX_TERMINAL_ONLY) send({ method: 'error', params: { threadId: thread.id, turnId: turn.id, willRetry: false, error } });
         send({ method: 'turn/completed', params: { threadId: thread.id, turn: { ...turn, status: 'failed', error } } });
       } else setTimeout(() => process.exit(0), 100);
       continue;
