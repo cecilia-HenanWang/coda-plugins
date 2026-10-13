@@ -11,7 +11,8 @@
 // sync until it is dealt with in Coda's text, or replaced here (REDACT) with a reason.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ACP_PROTOCOL_VERSION, CODA_COMMIT } from '../check/coda.mjs';
 
@@ -26,7 +27,7 @@ const PRIVATE = [
   [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, 'IP 地址'],
   [/\b[\w-]+\.(?:ts\.net|internal|lan|local|corp)\b/gi, '内网主机名'],
   [/\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{10,}|\bsk-[A-Za-z0-9-]{16,}|\bxox[abpr]-[A-Za-z0-9-]{10,}/g, '令牌'],
-  [/github\.com[/:]coda-console\/(?!coda-plugins\b)[\w.-]+/gi, '私有仓库链接'],
+  [/github\.com[/:]coda-console\/(?!coda-plugins(?:\.git)?(?![\w.-]))[\w.-]+/gi, '私有仓库链接'],
   [/[\w.+-]+@[\w-]+\.[\w.-]+/g, '邮箱'],
 ];
 
@@ -78,7 +79,8 @@ function sync(coda) {
   console.log(`已从 Coda ${commit.slice(0, 7)} 同步 ${SOURCE}`);
 }
 
-if (import.meta.main) {
+// Run as a script, not imported (by the tests).
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   const { values } = parseArgs({ options: { coda: { type: 'string' }, check: { type: 'boolean' } } });
   if (values.check) {
     const problems = checkCopy();

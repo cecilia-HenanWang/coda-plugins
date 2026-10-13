@@ -34,6 +34,7 @@ const methods = {
     if (mode === 'bad-update') notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: 'hi' } });
     if (mode === 'foreign-session') say('someone-else', 'hi');
     if (mode === 'bad-wait') wait({ sessionId, waitId: 'w', state: 'running' });
+    if (mode === 'wait-no-params') send({ method: '_coda/wait' });
     if (mode === 'after-terminal') { wait({ sessionId, waitId: 'w', kind: 'task', state: 'waiting' }); wait({ sessionId, waitId: 'w', state: 'done' }); wait({ sessionId, waitId: 'w', state: 'handling' }); }
     if (mode === 'subagent-no-child') { wait({ sessionId, waitId: `w${turns}`, kind: 'subagent', state: 'waiting' }); wait({ sessionId, waitId: `w${turns}`, state: 'done' }); }
     if (mode === 'timer-no-at') { wait({ sessionId, waitId: `t${turns}`, kind: 'timer', state: 'waiting' }); wait({ sessionId, waitId: `t${turns}`, state: 'done' }); }

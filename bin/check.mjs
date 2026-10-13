@@ -10,7 +10,7 @@ import { format } from '../check/report.mjs';
 const USAGE = `用法：coda-plugin-check <插件目录> [--agent <id>] [--manifest] [--live] [--prompt "…"]
 
   清单（总是查）  package.json 能不能被 Coda 读懂，从仓库安装的限制
-  握手（默认查）  照 Coda 的样子启动每个 Agent：initialize、session/new、关标准输入后退出；读每个面板一次
+  握手（默认查）  照 Coda 的样子启动每个 Agent，发 initialize、session/new；关标准输入后 5 秒内要退出；读每个面板一次
   一轮（--live）  每个 Agent 发一轮提示词（默认「只回复 ok」）、再发一轮并取消、核对 _coda/wait；声明 loadSession 的再开进程 session/load
 
   --agent <id>   只查这一个 Agent（面板不读）
@@ -27,6 +27,8 @@ const { values, positionals } = options;
 if (values.help) { console.log(USAGE); process.exit(0); }
 if (positionals.length !== 1 || (values.manifest && values.live)) { console.error(USAGE); process.exit(2); }
 
+// Detached agents and temporary directories go with the checker (check/process.mjs, check/agent.mjs).
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(130));
 const dir = resolve(positionals[0]);
 const { report, plugin } = await checkPlugin(dir, { agent: values.agent ?? null, manifestOnly: !!values.manifest, live: !!values.live, prompt: values.prompt });
 const shown = positionals[0];

@@ -11,18 +11,21 @@ import { explain, schemas } from './schema.mjs';
 import { Waits } from './waits.mjs';
 
 // `pause`: a quiet moment between two turns, as between two messages of a person, for what an agent says after a turn
-// to be heard outside it.
-export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, pause: 500 };
+// to be heard outside it. `term`: how long Coda's session host waits after SIGTERM before SIGKILL.
+export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, pause: 500, term: 800 };
+// Temporary directories not yet removed: they go however the checker ends.
+const bases = new Set();
+process.on('exit', () => { for (const base of bases) rmSync(base, { recursive: true, force: true }); });
 const secs = ms => (ms / 1000).toFixed(1);
 const short = (text, max = 80) => (text.length > max ? `${text.slice(0, max)}…` : text).replace(/\s+/g, ' ');
 
 // One process of the agent with the session it opens, and what it says, taken in order.
 class Session {
-  constructor({ agent, pluginDir, base, say, limits, waits = null }) {
+  constructor({ agent, pluginDir, base, say, limits }) {
     this.say = say; this.limits = limits;
-    this.waits = waits ?? new Waits({ fail: (rule, message) => this.at.fail(rule, message), warn: (rule, message) => this.at.warn(rule, message) });
+    this.waits = new Waits({ fail: (rule, message) => this.at.fail(rule, message), warn: (rule, message) => this.at.warn(rule, message) });
     this.turn = null; this.autonomous = null; this.autonomousTurns = 0; this.loading = true; this.pendingWaits = [];
-    this.kinds = new Map(); this.approvals = 0; this.said = new Set(); this.listeners = new Set();
+    this.kinds = new Map(); this.malformed = 0; this.said = new Set(); this.listeners = new Set();
     // The session's working copy, and the plugin's state directory, which Coda makes for it.
     this.cwd = join(base, 'work');
     for (const dir of [this.cwd, join(base, 'state')]) mkdirSync(dir, { recursive: true });
@@ -63,7 +66,11 @@ class Session {
   }
   update(params) {
     const parsed = schemas.zSessionNotification.safeParse(params);
-    if (!parsed.success) { this.at.fail('update.schema', `session/update 不合 ACP schema（SDK 1.4.0）：${explain(parsed.error, params)}`); return; }
+    if (!parsed.success) {
+      this.malformed++;
+      this.at.fail('update.schema', `session/update 不合 ACP schema（SDK 1.4.0）：${explain(parsed.error, params)}`);
+      return;
+    }
     // Of a session being opened Coda keeps only its commands and title; a replayed history it does not want.
     if (this.loading) return;
     if (!this.waits.owns(params.sessionId)) {
@@ -102,7 +109,6 @@ class Session {
         this.proc.respond(m.id, refuse);
         return;
       }
-      this.approvals++;
       if (permission) {
         const reject = m.params.options.find(o => o.kind === 'reject_once') ?? m.params.options.find(o => o.kind === 'reject_always');
         this.proc.respond(m.id, reject ? { outcome: { outcome: 'selected', optionId: reject.optionId } } : refuse);
@@ -120,7 +126,7 @@ class Session {
 
   // initialize, then session/new or session/load as AcpSession.initialize does. Returns 'ok', 'signed-out' or 'failed'.
   async open(sessionId = null) {
-    const say = this.say.handshake;
+    const say = this.at;
     let reply;
     try { reply = await this.proc.request('initialize', { protocolVersion: ACP_PROTOCOL_VERSION, clientCapabilities: clientCapabilities() }, { timeout: this.limits.open }); }
     catch (e) { this.reportedExit = e instanceof Exited; say.fail('handshake.initialize', `initialize 失败：${e.message}`); return 'failed'; }
@@ -129,7 +135,10 @@ class Session {
     const init = schemas.zInitializeResponse.safeParse(reply.result);
     if (!init.success) { say.fail('handshake.initialize', `initialize 的结果不合 ACP schema：${explain(init.error)}`); return 'failed'; }
     this.init = reply.result;
-    if (reply.result.protocolVersion !== ACP_PROTOCOL_VERSION) { say.fail('handshake.protocol', `protocolVersion 是 ${reply.result.protocolVersion}，Coda 讲的是 ${ACP_PROTOCOL_VERSION}`); return 'failed'; }
+    if (reply.result.protocolVersion !== ACP_PROTOCOL_VERSION) {
+      say.fail('handshake.protocol', `protocolVersion 是 ${reply.result.protocolVersion}：Coda 用的 ACP（SDK 1.4.0）是版本 ${ACP_PROTOCOL_VERSION}（Coda 自己不核对这一项，按它说的协议说话）`);
+      return 'failed';
+    }
     const caps = reply.result.agentCapabilities ?? {}, waits = !!caps._meta?.coda?.waits && typeof caps._meta.coda.waits === 'object';
     this.canLoad = caps.loadSession === true;
     if (!sessionId) say.pass('handshake.initialize', `initialize：protocolVersion ${ACP_PROTOCOL_VERSION}，loadSession ${this.canLoad}，${waits
@@ -165,9 +174,9 @@ class Session {
       await this.until(() => this.turn !== turn || turn.updates > 0, this.limits.cancelDelay);
       if (this.turn === turn) { cancelledAt = Date.now(); this.proc.notify('session/cancel', { sessionId: this.sessionId }); }
     }
-    let m;
+    let m, timer;
     try {
-      m = cancelledAt ? await Promise.race([reply, new Promise((_, reject) => setTimeout(reject, this.limits.cancel, new Timeout('取消后的 session/prompt', this.limits.cancel)))])
+      m = cancelledAt ? await Promise.race([reply, new Promise((_, reject) => { timer = setTimeout(reject, this.limits.cancel, new Timeout('取消后的 session/prompt', this.limits.cancel)); })])
         : await reply;
     } catch (e) {
       this.reportedExit = e instanceof Exited;
@@ -175,7 +184,7 @@ class Session {
         ? `session/cancel 后 ${secs(this.limits.cancel)} 秒这一轮还没结束：Coda 会关掉托管连接与它的进程组，结果未知`
         : `这一轮没有结束：${e.message}`);
       return null;
-    }
+    } finally { clearTimeout(timer); }
     if (m.error) { say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 回了错误 ${m.error.code}：${m.error.message}（Coda 把这一轮记为失败）`); return null; }
     const parsed = schemas.zPromptResponse.safeParse(m.result);
     if (!parsed.success) { say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 的结果不合 ACP schema：${explain(parsed.error)}`); return null; }
@@ -206,16 +215,21 @@ class Session {
     }
     return !this.waits.open.length;
   }
-  // Closes its standard input; it should be gone within `exit`. One that ended before is said to have, unless that was
-  // said already. Its process group goes either way.
+  // Closes its standard input; it should be gone within `exit`. One that is not is then stopped as Coda stops it (SIGTERM
+  // to its group), to say whether that would do. One that ended before is said to have, unless that was said already. Its
+  // process group goes either way.
   async finish(say) {
     if (this.proc.exit) {
       const { code, signal } = this.proc.exit, words = this.proc.lastWords();
       if (!this.reportedExit) say.fail('handshake.exited', `Agent 进程提前退出了（${signal ? `信号 ${signal}` : `退出码 ${code}`}）${words ? `：${words}` : ''}`);
     } else {
       const took = await this.proc.closeInput(this.limits.exit);
-      if (took === null) say.fail('handshake.exit', `关标准输入后 ${secs(this.limits.exit)} 秒还没退出`);
-      else say.pass('handshake.exit', `关标准输入后 ${secs(took)} 秒退出`);
+      if (took !== null) say.pass('handshake.exit', `关标准输入后 ${secs(took)} 秒退出`);
+      else {
+        const termed = await this.proc.terminate(this.limits.term);
+        say.fail('handshake.exit', `关标准输入后 ${secs(this.limits.exit)} 秒还没退出${termed !== null
+          ? `（Coda 关会话时发的 SIGTERM 能让它退出）` : `；Coda 关会话时发的 SIGTERM 也没让它在 ${secs(this.limits.term)} 秒内退出，只能 SIGKILL`}`);
+      }
     }
     this.proc.kill();
   }
@@ -231,20 +245,26 @@ async function live(session, prompt, limits, say) {
       : `；${secs(limits.settle)} 秒后还有 ${session.waits.open.length} 个没结束（定时与长任务可以这样，不算失败）`}`);
     if (session.lastAutonomous?.text) say.info('live.autonomous', `自主轮次的回复「${short(session.lastAutonomous.text)}」`);
   } else say.info('live.waits', '这一轮没有登记等待项');
-  // A second turn, stopped; and a turn of the agent's own that it brings about, stopped too.
+  // A second turn, stopped; and a turn of the agent's own that it brings about, stopped too. Coda sends nothing while a turn
+  // of the agent's own is under way: a message waits for it to end.
   await new Promise(resolve => setTimeout(resolve, limits.pause));
-  await session.prompt(prompt, { cancel: true });
-  await session.settle(limits.settle, { cancel: true });
+  if (!await session.until(() => !session.autonomous, limits.settle)) say.warn('live.cancel', `自主轮次 ${secs(limits.settle)} 秒还没结束，第二轮（取消）没发`);
+  else {
+    await session.prompt(prompt, { cancel: true });
+    await session.settle(limits.settle, { cancel: true });
+  }
   const kinds = [...session.kinds].map(([kind, n]) => `${kind} ×${n}`).join('，');
-  say.pass('live.updates', `session/update 都合 ACP schema（SDK 1.4.0）：${kinds || '无'}`);
+  if (!session.malformed) say.pass('live.updates', `session/update 都合 ACP schema（SDK 1.4.0）：${kinds || '无'}`);
 }
 
 // Checks one declared agent of the plugin in `pluginDir`; `say(level)` gives the report scope for a level.
 export async function checkAgent({ agent, pluginDir, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
   const limits = { ...LIMITS, ...given }, base = mkdtempSync(join(tmpdir(), 'coda-plugin-check-'));
-  const scopes = { handshake: say('handshake'), live: say('live') };
+  const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [];
+  bases.add(base);
   try {
     const session = new Session({ agent, pluginDir, base, say: scopes, limits });
+    sessions.push(session);
     const opened = await session.open();
     if (opened === 'ok' && running) await live(session, prompt, limits, scopes.live);
     else if (running) scopes.live.skip('live.skipped', opened === 'signed-out' ? '未登录，一轮跳过' : '握手没过，一轮跳过');
@@ -253,10 +273,13 @@ export async function checkAgent({ agent, pluginDir, live: running = false, prom
     if (opened !== 'ok' || !running) return;
     if (!session.canLoad) { scopes.live.skip('live.load', '没声明 loadSession：Coda 不会要求恢复，session/load 不查'); return; }
     const again = new Session({ agent, pluginDir, base, say: scopes, limits });
+    sessions.push(again);
     again.live = true;
     if (await again.open(session.sessionId) === 'ok') scopes.live.pass('live.load', `新进程 session/load 接上了会话 ${session.sessionId}`);
     await again.finish(scopes.live);
   } finally {
+    for (const session of sessions) session.proc.kill();
     rmSync(base, { recursive: true, force: true });
+    bases.delete(base);
   }
 }

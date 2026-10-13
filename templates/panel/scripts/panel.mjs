@@ -28,7 +28,7 @@ const [one, five, fifteen] = loads(), cores = cpus().length, up = uptime(), mark
 const items = [
   { type: 'button', label: '记下此刻', action: 'mark' },
   // 进度条一律画「还剩多少」：这里是 CPU 按 1 分钟负载算的余量；不知道比例时不写 fraction。
-  { type: 'meter', label: 'CPU 余量（1 分钟负载）', value: `${one.toFixed(2)} / ${cores} 核`, fraction: Math.max(0, Math.min(1, 1 - one / cores)),
+  { type: 'meter', label: 'CPU 余量（1 分钟负载）', value: `${one.toFixed(2)} / ${cores} 核`, fraction: Math.round(Math.max(0, Math.min(1, 1 - one / cores)) * 1000) / 1000,
     note: `5 分钟 ${five.toFixed(2)}，15 分钟 ${fifteen.toFixed(2)}`, time: new Date(Date.now() - up * 1000).toISOString(), timeLabel: '开机' },
   ...(mark ? [{ type: 'stat', label: '距上次记下', value: since((Date.now() - Date.parse(mark)) / 1000) }] : []),
 ];

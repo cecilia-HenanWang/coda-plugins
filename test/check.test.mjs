@@ -54,6 +54,13 @@ describe('this repository', () => {
     assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
     assert.match(report.items.find(item => item.rule === 'panel.read').message, /card ×1.*button ×1.*meter ×1/);
   });
+  test('a plugin reached through a symbolic link is measured from the real repository', async () => {
+    const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
+    temps.push(join(link, '..'));
+    symlinkSync(root, link);
+    const { report } = await checkPlugin(join(link, 'templates/panel'), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+  });
   test('plugins/cursor passes the manifest level', async () => {
     const { report, plugin: cursor } = await checkPlugin(at('plugins/cursor'), { manifestOnly: true });
     assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files']);
@@ -79,6 +86,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['bad-update', 'update.schema', { live: true }],
     ['foreign-session', 'update.session', { live: true }],
     ['bad-wait', 'wait.invalid', { live: true }],
+    ['wait-no-params', 'wait.invalid', { live: true }],
     ['after-terminal', 'wait.after-terminal', { live: true }],
     ['subagent-no-child', 'wait.subagent-child', { live: true }],
     ['timer-no-at', 'wait.timer-at', { live: true }],
@@ -113,6 +121,10 @@ describe('a liar fails on the rule it breaks', () => {
     const { report } = await checkPlugin(plugin({ mode: 'stdout-noise' }), { live: true, limits });
     assert.deepEqual(failed(report), []);
     assert.ok(rules(report, 'warn').includes('wire.noise'));
+  });
+  test('one that ignores the end of its input is told whether SIGTERM, as Coda stops it, would do', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'linger' }), { limits });
+    assert.match(report.failures[0].message, /SIGTERM 能让它退出/);
   });
   test('a command that does not start', async () => {
     const { report } = await checkPlugin(plugin({ agent: { command: 'exec definitely-not-installed-agent acp' } }), { limits });

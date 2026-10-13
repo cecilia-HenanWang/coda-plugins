@@ -48,7 +48,7 @@ function report(sessionId, waitId, state, fields = {}) {
 function startWait(sessionId, text) {
   const s = session(sessionId), waitId = `wait-${++s.count}`;
   s.waits.set(waitId, { state: 'waiting', timer: setTimeout(() => handle(sessionId, waitId, text), 2000) });
-  report(sessionId, waitId, 'waiting', { kind: 'task', title: '两秒后回来', detail: text, stoppable: true });
+  report(sessionId, waitId, 'waiting', { kind: 'task', title: '两秒后回来', detail: text.slice(0, 4000), stoppable: true });
 }
 // 到点了：报 handling（一轮之外时 Coda 开一轮自主轮次），说完报 done。被停下就不再说。
 async function handle(sessionId, waitId, text) {

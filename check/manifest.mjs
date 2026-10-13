@@ -3,7 +3,7 @@
 // plugin-extensions.mjs), what a plugin from a repository may not be from plugin-sources.mjs; check/coda.mjs names the
 // commit. Coda stops at the first thing it cannot read; here each part is checked on its own, so one run lists them all.
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_PLUGINS, CAPABILITY, CONTRIBUTES, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM,
@@ -282,7 +282,9 @@ export function checkManifest(dir, say) {
       if (!declared) return;
       if (agents.some(a => a.id === declared.id)) { say.fail('manifest.agents', 'contributes.agents 里有重复的 id'); return; }
       const owner = BUILTIN_AGENTS[declared.id];
-      if (owner) say.fail('manifest.agent-id', `Agent ${declared.id} 已由内置插件 ${owner} 声明，换一个 ID`);
+      if (owner) say.fail('manifest.agent-id', declared.id === 'claude'
+        ? 'Agent ID claude 是 Coda 早先的 Claude 会话存的 ID：Coda 的读取来源不拦它，但装上会接管那些旧会话，换一个 ID'
+        : `Agent ${declared.id} 已由内置插件 ${owner} 声明，换一个 ID`);
       agents.push(declared);
       const sizes = declared.icons.map(i => `${i.path} ${(i.size / 1024).toFixed(1)} KiB`).join('，');
       say.pass('manifest.agents', `Agent ${declared.id}「${declared.displayName}」：字段齐全，command 一行，图标 PDF（${sizes}）`);
@@ -329,7 +331,8 @@ export function checkManifest(dir, say) {
   if (size > SIZE_LIMIT) say.fail('source.size', `整个目录超过 ${SIZE_LIMIT / 1024 / 1024} MiB（现为 ${(size / 1024 / 1024).toFixed(1)} MiB）`);
   let path = null;
   if (top) {
-    path = relative(top, dir).split(sep).filter(Boolean);
+    // Git names the top by its real path; so is the directory measured.
+    path = relative(top, realpathSync(dir)).split(sep).filter(Boolean);
     if (path.length > DEPTH) say.fail('source.depth', `插件目录 ${path.join('/')} 在仓库根下超过 ${DEPTH} 层：Coda 扫不到`);
     const bad = path.find(p => !SEGMENT.test(p));
     if (bad) say.fail('source.segment', `目录名 ${bad} 只能用字母、数字和「._-」`);

@@ -6,12 +6,17 @@ import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
 const STDERR_TAIL = 4096;
+// Every process group started and not yet killed: they go with the checker however it ends (they are detached, so a
+// Ctrl-C does not reach them).
+const running = new Set();
+process.on('exit', () => { for (const proc of running) proc.kill(); });
 
 export class AgentProcess {
   // `onMessage(message)`: every request and notification the agent sends, in order. `onNoise(line, why)`: a line Coda would drop.
   constructor({ command, cwd, env, onMessage = () => {}, onNoise = () => {} }) {
     this.generation = randomBytes(3).toString('hex'); this.next = 0; this.pending = new Map(); this.stderr = '';
     this.child = spawn('/bin/sh', ['-c', command], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    running.add(this);
     this.child.stdin.on('error', () => {});
     this.child.stderr.on('data', chunk => { this.stderr = (this.stderr + chunk).slice(-STDERR_TAIL); });
     this.exit = null;
@@ -55,15 +60,20 @@ export class AgentProcess {
   notify(method, params) { this.write({ method, params }); }
   respond(id, result) { this.write({ id, result }); }
   respondError(id, code, message) { this.write({ id, error: { code, message } }); }
-  // Closes its standard input; resolves to how long it took to exit, or null past `limit`.
-  async closeInput(limit) {
-    const started = Date.now();
-    this.child.stdin.end();
-    const done = await Promise.race([this.exited, new Promise(resolve => setTimeout(resolve, limit, null))]);
-    return done ? Date.now() - started : null;
+  // Resolves to how long it took to exit after `start`, or null past `limit`.
+  async exitWithin(limit, start = Date.now()) {
+    let timer;
+    const done = await Promise.race([this.exited, new Promise(resolve => { timer = setTimeout(resolve, limit, null); })]);
+    clearTimeout(timer);
+    return done ? Date.now() - start : null;
   }
+  // Closes its standard input; how long it took to exit, or null past `limit`.
+  closeInput(limit) { this.child.stdin.end(); return this.exitWithin(limit); }
+  // What Coda's session host does to stop it (adapters/session-host.mjs): SIGTERM to its process group.
+  terminate(limit) { this.signal('SIGTERM'); return this.exitWithin(limit); }
+  signal(name) { try { process.kill(-this.child.pid, name); } catch {} }
   // Whatever is left of its process group goes, as Coda's host makes sure.
-  kill() { try { process.kill(-this.child.pid, 'SIGKILL'); } catch {} }
+  kill() { this.signal('SIGKILL'); running.delete(this); }
   lastWords() { return this.stderr.split('\n').map(l => l.trim()).filter(Boolean).at(-1)?.slice(0, 300) ?? ''; }
 }
 

@@ -26,7 +26,7 @@ export class Waits {
   get handling() { return this.open.filter(w => w.state === 'handling'); }
   // One report, in order with the session's updates; `turn`: whether a turn of Coda's was under way as it came.
   take(p, { turn }) {
-    if (!validWait(p)) { this.say.fail('wait.invalid', `_coda/wait 被 Coda 丢弃：${whyInvalid(p)}（${JSON.stringify(p).slice(0, 160)}）`); return; }
+    if (!validWait(p)) { this.say.fail('wait.invalid', `_coda/wait 被 Coda 丢弃：${whyInvalid(p)}（${(JSON.stringify(p) ?? String(p)).slice(0, 160)}）`); return; }
     if (!this.owns(p.sessionId)) { this.say.fail('wait.session', `_coda/wait 说的会话 ${p.sessionId} 不是本会话，也不是登记过的子会话：Coda 丢弃`); return; }
     const key = `${p.sessionId}\0${p.waitId}`, known = this.waits.get(key);
     if (known && TERMINAL.has(known.state)) {
