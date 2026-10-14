@@ -2,7 +2,7 @@
   "name": "cursor",
   "displayName": "Cursor",
   "description": "Cursor Agent：Coda 的入口在运行机的 Cursor CLI（cursor-agent acp）与 Coda 之间转发，并把会话指令放进原生会话的第一轮；每个会话一个进程。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "contributes": {
     "agents": [
       {

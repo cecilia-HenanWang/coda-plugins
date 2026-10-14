@@ -1,9 +1,9 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: 3ce97f17fd898347e90374b6143ca18dbcd2e4ff
+  coda-commit: 8e979c5619728f43d3c9eeb2332e7adb89f5edf9
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 27f1bde8106e9399674ee9180d9c668070a6d3cb1ca1c0c8bb4932b15625aefe
+  body-sha256: 1ce8b14a03ba51a7a2ffa80b14833faf2365727cdf46e8d4ea7bd6c13a0e12a7
 -->
 # Agent 接入协议
 
@@ -45,7 +45,7 @@ ACP 只允许在一轮（`session/prompt`）进行时交互。Agent 在两轮之
 - **当前模型**：`session/new`、`session/load` 的结果要报出会话当前用的模型：配置项里 `category: model` 那一项的 `currentValue`，或 `models.currentModelId`；
   之后 `config_option_update` 与 `session/set_config_option`、`session/set_model` 的结果改了它，以改后的为准。Coda 每轮开始前把会话设置设给 Agent，
   再读当前模型记作这一轮的实际模型；读不到就拒绝这一轮（「适配器未报告实际模型」），不发 `session/prompt`。
-- **设置**：会话设置里选了的模型、推理强度与模式，每轮开始前设给 Agent；没选的保持会话现状。模型或推理强度的选择型配置项里，
+- **设置**：会话设置里选了的模型、推理强度与模式，每轮开始前设给 Agent；没选的保持会话现状。当前模式是空字符串表示还没有选模式（Agent 按它自己的配置），按没有设置显示。模型或推理强度的选择型配置项里，
   可以有一项带 `_meta.coda.default: true`，表示交给 Agent 自己的默认：会话设置里没选时，Coda 把配置项切回这一项。这一项不进模型或强度的列表，
   当前值是它时按没有设置显示。
 - **其他配置项**：模型、推理强度与模式之外的配置项，Coda 原样列给用户：选择型是一组选项，开关型（`type: boolean`）是一个开关；Coda 在 `initialize` 的
@@ -164,7 +164,7 @@ Agent 发给 Coda 的通知（没有 `id`，不回复），和 `session/update` 
 
 | `kind` | Coda 当它是 | 显示 | 会话的事实 |
 | --- | --- | --- | --- |
-| `task` 与其他词 | 后台命令 | 会话历史里的后台任务卡片、底部的未结束任务、后台任务列表；`stoppable` 时有停止按钮；圆环「后台任务运行中」 | `background` |
+| `task` 与其他词 | 后台命令 | 发起记录留在原位，任务等待时沉底、结束时留在自己的结束位置；`stoppable` 时有停止按钮；圆环「后台任务运行中」 | `background` |
 | `subagent` | 委派 | 委派清单里的一项（`kind: task`），点开是它的过程视图，子会话的输出都归它；圆环「等待后续结果」，同子会话 | `background` |
 | `timer` | 定时唤醒 | 会话底部的定时一行（计划、是否反复）；不进历史 | `scheduled`，不算 `background` |
 

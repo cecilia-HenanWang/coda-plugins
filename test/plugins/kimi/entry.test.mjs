@@ -197,6 +197,17 @@ test('Coda\'s session instructions go in front of a new session\'s first prompt 
   assert.deepEqual([said.at(-1).id, said.at(-1).error.code], [7, -32602]);
 });
 
+test('a title Kimi took from the instructions in front of the first prompt is not passed on; its own titles are', async t => {
+  const { r, said } = relay();
+  t.after(() => r.close());
+  const info = update => r.fromAgent({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: SESSION, update: { sessionUpdate: 'session_info_update', ...update } } });
+  info({ title: '<coda-session-instructions> Instructions from Coda, the client this session runs in', updatedAt: '2026-10-14T00:00:00Z' });
+  info({ title: '修好登录页' });
+  await r.drained();
+  const titles = said.filter(m => m.params?.update?.sessionUpdate === 'session_info_update').map(m => m.params.update);
+  assert.deepEqual(titles, [{ sessionUpdate: 'session_info_update', updatedAt: '2026-10-14T00:00:00Z' }, { sessionUpdate: 'session_info_update', title: '修好登录页' }]);
+});
+
 test('setup installs a missing or broken Kimi CLI, upgrades one older than the file layout the relay reads, and keeps a newer one', () => {
   const run = (status, stdout = '', stderr = '') => () => ({ status, stdout, stderr });
   assert.equal(MINIMUM, '2.1.1');
