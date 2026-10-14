@@ -23,23 +23,28 @@ function ask(method, params) {
   return new Promise(resolve => asked.set(id, resolve));
 }
 
+// The sessions this process opened itself.
+const opened = new Set();
 const methods = {
   initialize: () => ({ protocolVersion: mode === 'protocol-version' ? 2 : 1,
-    agentCapabilities: { loadSession: mode === 'load-fails', ...(mode === 'no-system-prompt' ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {} } } },
+    agentCapabilities: { loadSession: mode === 'load-fails' || mode === 'load-forgets', ...(mode === 'no-system-prompt' ? {} : { sessionCapabilities: { systemPrompt: {} } }), _meta: { coda: { waits: {} } } },
     authMethods: [], ...(STEERS.includes(mode) ? { _meta: { steering: { supported: true } } } : {}) }),
   'session/new': params => {
     if (mode === 'signed-out') throw Object.assign(new Error('Authentication required'), { code: -32000 });
     instructed(params);
     const sessionId = randomUUID();
+    opened.add(sessionId);
     if (mode === 'wait-while-loading') wait({ sessionId, waitId: 'early', kind: 'task', state: 'waiting' });
     return mode === 'no-model' ? { sessionId } : { sessionId, configOptions: [MODEL] };
   },
-  // Says whether the instructions came with it.
+  // Says whether the instructions came with it; or answers the load and keeps no session for it (OpenCode before 1.0.151).
   'session/load': ({ systemPrompt }) => {
+    if (mode === 'load-forgets') return { configOptions: [MODEL] };
     const word = /reply with exactly (\S+) and nothing else/.exec(textOf(systemPrompt?.content))?.[1];
     throw Object.assign(new Error(`会话不见了${word ? `（收到了检查词 ${word} 的会话指令）` : ''}`), { code: -32002 });
   },
   'session/prompt': async ({ sessionId, prompt }) => {
+    if (mode === 'load-forgets' && !opened.has(sessionId)) throw Object.assign(new Error(`Session not found: ${sessionId}`), { code: -32602 });
     const text = textOf(prompt);
     context += `${text}\n`;
     // The checker's first turn, apart from those the modes count.

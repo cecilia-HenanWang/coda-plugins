@@ -99,6 +99,7 @@ describe('a liar fails on the rule it breaks', () => {
     ['slow-end-turn', 'live.cancel-reason', { live: true }],
     ['ignore-sigterm', 'handshake.sigterm', {}],
     ['load-fails', 'handshake.load', { live: true }],
+    ['load-forgets', 'live.load-turn', { live: true }],
     ['no-system-prompt', 'handshake.system-prompt', { live: true }],
     ['ignore-system-prompt', 'live.instructions', { live: true }],
     ['steer-own-turn', 'live.steering', { live: true }],

@@ -401,7 +401,13 @@ export async function checkAgent({ agent, pluginDir, settings = {}, dependencies
     const again = new Session({ agent, plugin, base, say: scopes, limits, instructions });
     sessions.push(again);
     again.live = true;
-    if (await again.open(session.sessionId) === 'ok') scopes.live.pass('live.load', `新进程 session/load 接上了会话 ${session.sessionId}${again.instructed ? '（同样带着会话指令）' : ''}`);
+    if (await again.open(session.sessionId) === 'ok') {
+      scopes.live.pass('live.load', `新进程 session/load 接上了会话 ${session.sessionId}${again.instructed ? '（同样带着会话指令）' : ''}`);
+      // The session goes on in the new process: Coda's next message is a turn of it. An agent that answers the load but keeps
+      // no session for it ("Session not found") leaves a resumed session that cannot go on.
+      const stop = await again.prompt(prompt, { as: 'live.load-turn' });
+      if (stop) scopes.live.pass('live.load-turn', `恢复后的一轮结束：stopReason ${stop}`);
+    }
     await again.finish(scopes.live);
   } finally {
     for (const session of sessions) session.proc.kill();

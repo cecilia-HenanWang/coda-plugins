@@ -38,7 +38,7 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
-| `opencode` | 无 | 已登录的 OpenCode CLI 0.15.17 及以上（设置动作安装或升级） |
+| `opencode` | 无 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
@@ -55,7 +55,7 @@ Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在
 
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
-Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 0.15.17（`opencode acp` 第一个在 `session/new`、`session/load` 报当前模型并能恢复会话的版本）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
+Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 1.0.151（`opencode acp` 第一个报当前模型、恢复的会话能接着跑的版本：之前 `session/load` 不登记会话，下一轮报 Session not found）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
 Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作。
 
 ### Grok 审批模式
@@ -218,7 +218,7 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 | --- | --- | --- |
 | 清单（总是） | 不要 | `package.json` 读得懂、ID 合法且不与内置的撞（本仓库 `plugins/<id>` 里的内置插件除外）；每个 Agent 字段齐全、`command` 一行、图标是不超过 32 KiB 的 PDF；面板、组与命令的声明，Agent、组与命令不与内置插件的撞；从仓库安装的限制，带 npm 依赖要有对得上的 `package-lock.json` |
 | 握手（默认） | 不要 | `sh -c` 启动 `command`（环境照 Coda 给插件进程的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`，依赖的插件在旁边目录里时给 `CODA_PLUGIN_DEPENDENCIES`），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1、声明会话指令（`sessionCapabilities.systemPrompt`，没声明算失败）；`session/new` 带会话指令，给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板读一次，输出合格式 |
-| 一轮（`--live`） | 要 | 第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（同样带会话指令）要成功 |
+| 一轮（`--live`） | 要 | 第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
 
 **取消后的 `stopReason` 怎么判**：检查发 `session/cancel` 时紧跟一个只会得到 -32601 的探测请求（`_codaCheck/barrier`）。Agent 按顺序读，
 探测的答复一定写在它读到取消之后，所以本轮的答复与 `session/update` 落在探测答复的前后，就说明它们写出时读没读到取消。

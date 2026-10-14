@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { opencodeBinary } from '../agent/binary.mjs';
 
 // The first release whose `opencode acp` keeps Coda's contract: it reports the current model on `session/new` and
-// `session/load` and can load a session (`loadSession: true`). `opencode acp` came in 0.15.10, but until 0.15.13 it reports
-// no model, so Coda refuses every turn, and until 0.15.16 it cannot load a session, so one cannot go on in a new process.
-export const MINIMUM = '0.15.17';
+// `session/load`, and a session it loads in a new process goes on. `opencode acp` came in 0.15.10, but until 0.15.13 it
+// reports no model, so Coda refuses every turn; until 0.15.16 it cannot load a session; and until 1.0.150 its load answers
+// without keeping the session (sst/opencode#5385), so the next prompt is "Session not found".
+export const MINIMUM = '1.0.151';
 // The first x.y.z a version command prints; whether one is older than another.
 export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
 export function older(version, than) {
