@@ -66,6 +66,6 @@ test('kimi, its relay with a fake kimi acp', async () => {
 test('grok, its approval-mode entry with a fake Grok CLI', async () => {
   const home = join(root, 'grok-home');
   program(join(home, '.grok/bin/grok'), at('./grok/fixture.mjs'));
-  const report = await check('grok', 'grok', { HOME: home, GROK_HOME: join(home, '.grok'), FAKE_GROK_STATE: home });
+  const report = await check('grok', 'grok', { HOME: home, GROK_HOME: join(home, '.grok') });
   assertPasses(report, [...EVERY, 'live.load']);
 });

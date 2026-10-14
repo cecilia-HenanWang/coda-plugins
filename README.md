@@ -45,11 +45,10 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 
 ### Grok 审批模式
 
-Grok 插件通过 ACP 提供「按运行机配置」「自动审批」「全部放行」。后两项使用 Grok 原生的
-`_meta.autoMode` / `yoloMode`；自动审批的判断、禁止规则与 hooks 都由 Grok 执行。
-Grok CLI 把这些参数绑定在连接上，因此插件在轮次之间切换模式时，用新进程加载同一个原生会话，保留模型与推理强度，
-过滤加载时重放的历史。新进程准备失败时保留原连接和模式；插件不修改运行机的 Grok 配置。
-该适配已核对 Grok CLI 1.0.52，升级 CLI 时需复核其会话参数与恢复行为。
+Grok 插件通过 ACP 提供原来的「自动审批」「全部放行」两个选项；新会话未选择时沿用运行机配置。
+`session/set_mode` 转为 Grok 自己的界面使用的 `_x.ai/yolo_mode_changed` 通知，在原进程中切换，
+不修改运行机配置。自动审批的判断、禁止规则与 hooks 都由 Grok 执行。
+该通知已核对 Grok CLI 1.0.52，升级 CLI 时需复核。
 
 ### Codex 账号与额度
 
