@@ -13,12 +13,14 @@ const send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 const thread = { id: 'fake-thread', turns: [], historyMode: 'paginated' };
 const model = { id: 'fake', model: 'fake', displayName: 'Fake', description: '', isDefault: true, hidden: false,
   defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }], inputModalities: ['text'] };
+const models = process.env.FAKE_CODEX_MODELS ? JSON.parse(process.env.FAKE_CODEX_MODELS) : [model];
+const session = { thread, model: models[0].model, reasoningEffort: 'medium', modelProvider: 'openai', serviceTier: process.env.FAKE_CODEX_SERVICE_TIER ?? null };
 const results = {
   'account/read': { account: { type: 'apiKey' }, requiresOpenaiAuth: false },
-  'model/list': { data: [model], nextCursor: null },
+  'model/list': { data: models, nextCursor: null },
   'skills/list': { data: [], nextCursor: null },
-  'thread/start': { thread, model: 'fake', reasoningEffort: 'medium', modelProvider: 'openai' },
-  'thread/resume': { thread, turnsBackwardsCursor: null, model: 'fake', reasoningEffort: 'medium', modelProvider: 'openai' },
+  'thread/start': session,
+  'thread/resume': { ...session, turnsBackwardsCursor: null },
 };
 const command = { type: 'commandExecution', id: 'command-1', command: 'sleep 100', cwd: '/', processId: '4242', status: 'inProgress', commandActions: [], source: 'agent' };
 let terminals = [];
