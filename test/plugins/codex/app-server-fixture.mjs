@@ -3,9 +3,11 @@
 // directory dies mid-turn with exit code 0, as a terminated app-server does; later turns complete.
 // FAKE_CODEX_MODEL_ERROR instead returns a model-service error of that kind (`codexErrorInfo`) on that first turn.
 // FAKE_CODEX_RPC_ERROR_METHOD fails that native method before it starts, with FAKE_CODEX_RPC_ERROR as its explanation.
+// What thread/start and thread/resume are asked goes to threads.ndjson in the state directory, each turn/start to prompts.ndjson.
+// config/read gives the configured developer instructions from developer_instructions.txt there, when there is one.
 // A later turn whose input names `subagent` runs a subagent that answers and ends; one that names `background` leaves a
 // command in the background, listed until it is terminated.
-import { existsSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const died = join(process.env.FAKE_CODEX_STATE, 'died');
@@ -23,7 +25,7 @@ const results = {
   'thread/resume': { ...session, turnsBackwardsCursor: null },
 };
 const command = { type: 'commandExecution', id: 'command-1', command: 'sleep 100', cwd: '/', processId: '4242', status: 'inProgress', commandActions: [], source: 'agent' };
-let terminals = [];
+let terminals = [], instructions = '';
 let buffer = '';
 process.stdin.on('data', chunk => {
   buffer += chunk;
@@ -31,6 +33,8 @@ process.stdin.on('data', chunk => {
     const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
     if (message.id === undefined || !message.method) continue;
     if (message.method === 'turn/start') appendFileSync(join(process.env.FAKE_CODEX_STATE, 'prompts.ndjson'), JSON.stringify(message.params) + '\n');
+    if (['thread/start', 'thread/resume'].includes(message.method) && !message.params.ephemeral) instructions = message.params.developerInstructions ?? '';
+    if (['thread/start', 'thread/resume'].includes(message.method)) appendFileSync(join(process.env.FAKE_CODEX_STATE, 'threads.ndjson'), JSON.stringify({ method: message.method, params: message.params }) + '\n');
     if (message.method === process.env.FAKE_CODEX_RPC_ERROR_METHOD && (message.method !== 'turn/start' || !existsSync(died))) {
       writeFileSync(died, '');
       send({ id: message.id, error: { code: -32603, message: process.env.FAKE_CODEX_RPC_ERROR } }); continue;
@@ -40,6 +44,10 @@ process.stdin.on('data', chunk => {
       const terminated = terminals.some(t => t.processId === message.params.processId);
       terminals = terminals.filter(t => t.processId !== message.params.processId);
       send({ id: message.id, result: { terminated } }); continue;
+    }
+    if (message.method === 'config/read') {
+      const configured = join(process.env.FAKE_CODEX_STATE, 'developer_instructions.txt');
+      send({ id: message.id, result: { config: { developer_instructions: existsSync(configured) ? readFileSync(configured, 'utf8') : null }, layers: null, origins: {} } }); continue;
     }
     if (message.method !== 'turn/start') { send({ id: message.id, result: results[message.method] ?? {} }); continue; }
     const turn = { id: `turn-${Date.now()}`, items: [], status: 'inProgress', error: null };
@@ -63,6 +71,11 @@ process.stdin.on('data', chunk => {
       send({ method: 'turn/started', params: { threadId: child, turn: childTurn } });
       send({ method: 'item/agentMessage/delta', params: { threadId: child, turnId: childTurn.id, itemId: 'child-message', delta: '子 Agent 的回答' } });
       send({ method: 'turn/completed', params: { threadId: child, turn: { ...childTurn, status: 'completed' } } });
+    }
+    // The checker's question about the session instructions, answered from the developer instructions as a model would.
+    if (input.includes('What is the Coda check word?')) {
+      const word = /reply with exactly (\S+) and nothing else/.exec(instructions)?.[1] ?? '不知道';
+      send({ method: 'item/agentMessage/delta', params: { threadId: thread.id, turnId: turn.id, itemId: 'answer', delta: word } });
     }
     if (input.includes('background')) {
       terminals = [{ itemId: command.id, processId: command.processId, command: command.command }];

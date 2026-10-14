@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { kimiSession } from '../../../plugins/kimi/agent/observe.mjs';
 import { KimiWaits } from '../../../plugins/kimi/agent/waits.mjs';
 import { KimiRelay } from '../../../plugins/kimi/agent/relay.mjs';
+import { MINIMUM, needed } from '../../../plugins/kimi/scripts/setup.mjs';
 
 const SESSION = 'session-test';
 async function layout(t, sessionId = SESSION, cwd) {
@@ -137,7 +138,7 @@ test('the relay says it reports waits, and before Kimi\'s answer to a prompt is 
   const { r, said, told, ready } = relay({ facts: () => facts });
   t.after(() => r.close());
   await ready();
-  assert.deepEqual(said[0].result.agentCapabilities, { _meta: { coda: { waits: {} } } });
+  assert.deepEqual(said[0].result.agentCapabilities, { sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {} } } });
   assert.deepEqual(said.filter(m => m.method === '_coda/wait').map(m => m.params.state), ['waiting']);
   r.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: SESSION, prompt: [] } });
   assert.equal(told.at(-1).id, 2);
@@ -160,10 +161,49 @@ test('outside a prompt, with nothing handled, what Kimi says waits for a look: w
   assert.equal(said.at(-2).params.state, 'handling');
 });
 
-test('CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay', async t => {
+test('CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for the session instructions', async t => {
   let looked = 0;
   const { r, said, ready } = relay({ env: { CODA_DISABLE_RUNTIME_PATCHES: 'kimi' }, facts: () => { looked++; return running; } });
   t.after(() => r.close());
   await ready();
-  assert.deepEqual([said.length, said[0].result.agentCapabilities, looked], [2, {}, 0]);
+  assert.deepEqual([said.length, said[0].result.agentCapabilities, looked], [2, { sessionCapabilities: { systemPrompt: {} } }, 0]);
+});
+
+test('Coda\'s session instructions go in front of a new session\'s first prompt only, never to Kimi as a parameter', async t => {
+  const { r, said, told } = relay();
+  t.after(() => r.close());
+  const systemPrompt = { mode: 'append', content: [{ type: 'text', text: '# Coda client' }] };
+  const prompt = (id, sessionId, text) => { r.fromCoda({ jsonrpc: '2.0', id, method: 'session/prompt', params: { sessionId, prompt: [{ type: 'text', text }] } }); return told.at(-1).params.prompt; };
+  r.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/new', params: { cwd: '/work', mcpServers: [], systemPrompt } });
+  assert.deepEqual(told.at(-1).params, { cwd: '/work', mcpServers: [] });
+  r.fromAgent({ jsonrpc: '2.0', id: 1, result: { sessionId: SESSION } });
+  // A slash command is Kimi's to read as one: the instructions wait.
+  assert.deepEqual(prompt(2, SESSION, '/compact'), [{ type: 'text', text: '/compact' }]);
+  const [instructions, input] = prompt(3, SESSION, '你好');
+  assert.equal(instructions.type, 'text');
+  assert.match(instructions.text, /^<coda-session-instructions>\n[^]*\n\n# Coda client\n<\/coda-session-instructions>\n$/);
+  assert.deepEqual(input, { type: 'text', text: '你好' });
+  assert.deepEqual(prompt(4, SESSION, '再来'), [{ type: 'text', text: '再来' }]);
+  // A loaded session has had them.
+  r.fromCoda({ jsonrpc: '2.0', id: 5, method: 'session/load', params: { sessionId: 'other', cwd: '/work', mcpServers: [], systemPrompt } });
+  assert.deepEqual(told.at(-1).params, { sessionId: 'other', cwd: '/work', mcpServers: [] });
+  r.fromAgent({ jsonrpc: '2.0', id: 5, result: {} });
+  assert.deepEqual(prompt(6, 'other', '继续'), [{ type: 'text', text: '继续' }]);
+  // What cannot be applied opens no session.
+  const count = told.length;
+  r.fromCoda({ jsonrpc: '2.0', id: 7, method: 'session/new', params: { cwd: '/work', mcpServers: [], systemPrompt: { mode: 'override', content: [] } } });
+  await r.drained();
+  assert.equal(told.length, count);
+  assert.deepEqual([said.at(-1).id, said.at(-1).error.code], [7, -32602]);
+});
+
+test('setup installs a missing or broken Kimi CLI, upgrades one older than the file layout the relay reads, and keeps a newer one', () => {
+  const run = (status, stdout = '', stderr = '') => () => ({ status, stdout, stderr });
+  assert.equal(MINIMUM, '2.1.1');
+  assert.deepEqual(needed(null), { action: 'install', reason: '这台机器上没有 Kimi CLI' });
+  assert.equal(needed('/bin/kimi', run(1)).action, 'install');
+  assert.deepEqual(needed('/bin/kimi', run(0, 'kimi, version 1.6.0\n')), { action: 'upgrade', reason: 'Kimi CLI 1.6.0 低于所需的 2.1.1' });
+  assert.deepEqual(needed('/bin/kimi', run(0, '', 'kimi 2.1.1\n')), { action: 'none', version: '2.1.1' });
+  assert.deepEqual(needed('/bin/kimi', run(0, 'kimi 2.10.0\n')), { action: 'none', version: '2.10.0' });
+  assert.equal(needed('/bin/kimi', run(0, 'kimi\n')).action, 'upgrade');
 });

@@ -55,7 +55,7 @@ const wait = (c, waitId) => c.waits().filter(w => w.waitId === waitId).map(({ se
 test('session/new lists the concrete models the SDK resolves its rows to, and settings go to the SDK as chosen', async t => {
   const c = await setup(t);
   const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
-  assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {} }, _meta: { coda: { waits: {} } } });
+  assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } });
   const opened = (await c.request('session/new', { cwd: c.cwd, mcpServers: [{ name: 'coda', command: 'node', args: ['shim.mjs'], env: [] }] })).result;
   c.sessionId = opened.sessionId; c.query = queries.get(opened.sessionId);
   const option = id => opened.configOptions.find(o => o.id === id);
@@ -72,7 +72,7 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   assert.equal(c.query.options.sessionId, c.sessionId);
   assert.deepEqual(c.query.options.systemPrompt, { type: 'preset', preset: 'claude_code' });
   assert.deepEqual(c.query.options.settings, { crossSessionInbound: 'refuse' });
-  assert.deepEqual([c.query.options.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, c.query.options.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH], ['1', '16384']);
+  assert.equal(c.query.options.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, '1');
   const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value });
   const changed = (await set('model', 'fixture-model-v1[1m]')).result.configOptions;
   assert.equal(c.query.model, 'fixture-model-v1[1m]');
@@ -90,6 +90,24 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   assert.equal(c.updates().findLast(u => u.sessionUpdate === 'config_option_update').configOptions.find(o => o.id === 'model').currentValue, 'fixture-model-v1[1m]');
   assert.deepEqual(c.updates().findLast(u => u.sessionUpdate === 'available_commands_update').availableCommands, [{ name: 'fixture', description: 'Fixture command' }]);
   assert.equal((await c.request('session/new', { cwd: c.cwd, mcpServers: [] })).error.code, -32600, 'one session a process');
+});
+
+test('Coda\'s session instructions follow Claude Code\'s system prompt, on a new session and a loaded one; other modes are refused', async t => {
+  const systemPrompt = text => ({ mode: 'append', content: [{ type: 'text', text }] });
+  const c = await setup(t);
+  await c.open({ systemPrompt: systemPrompt('# Coda client\n\nReplies are shown in Coda.') });
+  assert.deepEqual(c.query.options.systemPrompt, { type: 'preset', preset: 'claude_code', append: '# Coda client\n\nReplies are shown in Coda.' });
+  await c.prompt('one');
+  const again = await setup(t);
+  await again.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.ok((await again.request('session/load', { sessionId: c.sessionId, cwd: c.cwd, mcpServers: [], systemPrompt: systemPrompt('newer') })).result);
+  assert.deepEqual(queries.get(c.sessionId).options.systemPrompt, { type: 'preset', preset: 'claude_code', append: 'newer' });
+  const refused = await setup(t);
+  await refused.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  assert.equal((await refused.request('session/new', { cwd: c.cwd, mcpServers: [], systemPrompt: { mode: 'override', content: [{ type: 'text', text: 'x' }] } })).error.code, -32602);
+  assert.equal((await refused.request('session/new', { cwd: c.cwd, mcpServers: [], systemPrompt: { mode: 'append', content: [{ type: 'image', data: '', mimeType: 'image/png' }] } })).error.code, -32602);
+  // Refused before anything started: the process still opens its one session.
+  assert.ok((await refused.request('session/new', { cwd: c.cwd, mcpServers: [] })).result.sessionId);
 });
 
 test('session/load resumes the native session it names, and one that is not there is not found', async t => {

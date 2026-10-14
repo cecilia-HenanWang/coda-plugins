@@ -1,11 +1,12 @@
 // The handshake and live levels for one agent: the checker plays Coda (backend/src/adapters/acp.mjs AcpSession), starts the
 // agent's command the way Coda does, says what Coda says, and holds what the agent says to ACP's schema and to
 // docs/agent-protocol.md. Where Coda would quietly drop or refuse something, the check fails and says what Coda does.
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, TERM_GRACE, RETRY_DELAYS, continuationPrompt, serviceFailure, cleared, clientCapabilities, currentModel, pluginEnv } from './coda.mjs';
+import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, STEERING, STEERING_OUTCOMES, TERM_GRACE, RETRY_DELAYS, continuationPrompt,
+  serviceFailure, cleared, clientCapabilities, currentModel, pluginEnv, steeringParams, supportsSteering, systemPrompt, takesInstructions } from './coda.mjs';
 import { temporary } from './leftovers.mjs';
 import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
@@ -14,14 +15,26 @@ import { Waits } from './waits.mjs';
 // `exit`: how long an agent may take to go after SIGTERM, or after its input ends. `cancelReply`: how soon a turn whose work
 // was done answers once it has read the cancel. `pause`: a quiet moment between two turns, as between two messages of a
 // person, for what an agent says after a turn to be heard outside it. `term`: how long Coda's session host waits after
-// SIGTERM before SIGKILL.
+// SIGTERM before SIGKILL. `steer`: how long a steering request may take to be answered; `steerQuiet`: how long an agent that
+// answered one outside a turn is watched for a turn of its own.
 export const LIMITS = { open: OPEN_LIMIT, turn: 180_000, settle: 60_000, cancel: CANCEL_LIMIT, exit: 5_000, cancelDelay: 500, cancelReply: 5_000,
-  pause: 500, term: TERM_GRACE, retryDelays: RETRY_DELAYS };
+  pause: 500, term: TERM_GRACE, retryDelays: RETRY_DELAYS, steer: 30_000, steerQuiet: 2_000 };
 // A request of the checker's own, sent right behind a `session/cancel`; nothing answers it but an error (Method not found).
 // The agent reads it after the cancel, so its answer is written after the agent has read the cancel.
 export const BARRIER = '_codaCheck/barrier';
 // What an agent says of a session rather than does in a turn: what it says of these after a cancel is no work.
 const BOOKKEEPING = new Set(['available_commands_update', 'current_mode_update', 'config_option_update', 'session_info_update', 'usage_update']);
+// The session instructions the checker gives in Coda's place (Coda's own are backend/src/domain/client-instructions.mjs: how
+// replies show in its clients, the reply language, the plugins' instructions): a word in them that only an agent that took
+// them in before its first turn can say, asked for in that turn.
+export const CHECK_QUESTION = 'What is the Coda check word?';
+const instructionsFor = word => `# Coda client
+
+Your replies are shown in Coda, a graphical client on Mac and iPhone, not in a terminal. This session is run by coda-plugin-check, which plays Coda.
+
+If the user asks for the Coda check word, reply with exactly ${word} and nothing else.`;
+// A turn with something to say for a while, and a message for it as it goes; and one that comes once a turn has ended.
+const STEER_TURN = '从 1 数到 20，每个数字单独一行。', STEER_TEXT = '数完后再说一句「插话收到」。', STEER_LATE = '这条插话到的时候，这一轮已经结束了。';
 const secs = ms => (ms / 1000).toFixed(1);
 const short = (text, max = 80) => (text.length > max ? `${text.slice(0, max)}…` : text).replace(/\s+/g, ' ');
 
@@ -31,11 +44,11 @@ const agentEnv = (plugin, base) => ({ ...cleared(process.env), ...pluginEnv({ ..
 
 // One process of the agent with the session it opens, and what it says, taken in order.
 class Session {
-  constructor({ agent, plugin, base, say, limits }) {
-    this.say = say; this.limits = limits;
+  constructor({ agent, plugin, base, say, limits, instructions }) {
+    this.say = say; this.limits = limits; this.instructions = instructions;
     this.waits = new Waits({ fail: (rule, message) => this.at.fail(rule, message), warn: (rule, message) => this.at.warn(rule, message) });
     this.turn = null; this.autonomous = null; this.autonomousTurns = 0; this.loading = true; this.pendingWaits = [];
-    this.kinds = new Map(); this.malformed = 0; this.said = new Set(); this.listeners = new Set();
+    this.kinds = new Map(); this.malformed = 0; this.said = new Set(); this.listeners = new Set(); this.idleWork = [];
     // The session's working copy, and the plugin's state directory, which Coda makes for it.
     this.cwd = join(base, 'work');
     for (const dir of [this.cwd, join(base, 'state')]) mkdirSync(dir, { recursive: true });
@@ -94,7 +107,7 @@ class Session {
       turn.updates++;
       if (kind === 'agent_message_chunk' && params.update.content?.type === 'text') turn.text += params.update.content.text;
       if (turn.barrier?.answered && !BOOKKEEPING.has(kind)) turn.workAfterCancel.push(kind);
-    }
+    } else if (!BOOKKEEPING.has(kind)) this.idleWork.push(kind);
   }
   wait(params) {
     this.waits.take(params, { turn: !!this.turn });
@@ -151,12 +164,20 @@ class Session {
       return 'failed';
     }
     const caps = reply.result.agentCapabilities ?? {}, waits = !!caps._meta?.coda?.waits && typeof caps._meta.coda.waits === 'object';
-    this.canLoad = caps.loadSession === true;
-    if (!sessionId) say.pass('handshake.initialize', `initialize：protocolVersion ${ACP_PROTOCOL_VERSION}，loadSession ${this.canLoad}，${waits
-      ? '声明了 _meta.coda.waits' : '没声明 _meta.coda.waits（只是声明，登记照收）'}${caps.sessionCapabilities?.additionalDirectories != null ? '，收 additionalDirectories' : ''}`);
+    this.canLoad = caps.loadSession === true; this.instructed = takesInstructions(reply.result); this.steering = supportsSteering(reply.result);
+    if (!sessionId) {
+      say.pass('handshake.initialize', `initialize：protocolVersion ${ACP_PROTOCOL_VERSION}，loadSession ${this.canLoad}，${waits
+        ? '声明了 _meta.coda.waits' : '没声明 _meta.coda.waits（只是声明，登记照收）'}${caps.sessionCapabilities?.additionalDirectories != null ? '，收 additionalDirectories' : ''}，${this.steering
+        ? '声明了插话（_meta.steering）' : '没声明插话'}`);
+      if (this.instructed) say.pass('handshake.system-prompt', '声明了会话指令（sessionCapabilities.systemPrompt）：session/new、session/load 带 Coda 的指令（append 模式）');
+      else say.fail('handshake.system-prompt', 'initialize 没声明 agentCapabilities.sessionCapabilities.systemPrompt：Coda 照 ACP 的规矩不发会话指令（回复在 Mac、iPhone 上怎样显示、回复语言、插件说明），接入 Coda 的 Agent 必须声明。'
+        + '有原生系统提示词入口的放在那里；没有的，在原生会话第一次 session/prompt 时把指令作为单独、明确分隔的一段放在用户输入前面送入，之后与 session/load 恢复的会话不再送');
+    }
     if (sessionId && !this.canLoad) { say.fail('handshake.load', '新进程的 initialize 不再声明 loadSession：Coda 恢复不了这个会话'); return 'failed'; }
     const method = sessionId ? 'session/load' : 'session/new';
-    try { reply = await this.proc.request(method, { cwd: this.cwd, mcpServers: [], ...(sessionId ? { sessionId } : {}) }, { timeout: this.limits.open }); }
+    // Coda's instructions go with every open of the session, `session/load` too.
+    const instructions = this.instructed ? { systemPrompt: systemPrompt(this.instructions) } : {};
+    try { reply = await this.proc.request(method, { cwd: this.cwd, mcpServers: [], ...instructions, ...(sessionId ? { sessionId } : {}) }, { timeout: this.limits.open }); }
     catch (e) { this.reportedExit = e instanceof Exited; say.fail(sessionId ? 'handshake.load' : 'handshake.new', `${method} 失败：${e.message}`); return 'failed'; }
     if (reply.error?.code === SIGNED_OUT) { say.skip('handshake.signed-out', `${method} 回了 -32000（未登录）：Coda 提示用户去「资源」登录；后面的检查跳过`); return 'signed-out'; }
     if (reply.error) { say.fail(sessionId ? 'handshake.load' : 'handshake.new', `${method} 回了错误 ${reply.error.code}：${reply.error.message}`); return 'failed'; }
@@ -175,13 +196,16 @@ class Session {
   }
   // One turn of Coda's: `session/prompt` with an ID of Coda's choosing, as AcpSession.prompt sends it. With `cancel`, stopped
   // after the agent first says something, or `cancelDelay` after it was sent; the barrier behind the cancel tells what the
-  // agent said and did before it read the cancel from what it said and did after (`workAfterCancel`, `readCancel`).
-  async prompt(text, { cancel = false, attempt = 0, accepted = false } = {}) {
-    const say = this.say.live, id = randomUUID();
-    const turn = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, workAfterCancel: [], readCancel: false, replied: null };
+  // agent said and did before it read the cancel from what it said and did after (`workAfterCancel`, `readCancel`). With
+  // `steer`, that message is sent into the turn once the agent first says something, as Coda steers a turn under way; its
+  // answer is the turn's `steered`. `as`: the rule the turn is said under; one but `live.turn` is judged by the caller, from
+  // `last` (the turn).
+  async prompt(text, { cancel = false, steer = null, as = 'live.turn', attempt = 0, accepted = false } = {}) {
+    const say = this.say.live, id = randomUUID(), rule = cancel ? 'live.cancel' : as;
+    const turn = this.last = this.turn = { started: Date.now(), updates: 0, text: '', barrier: null, workAfterCancel: [], readCancel: false, replied: null, steered: null };
     const reply = this.proc.request('session/prompt', { sessionId: this.sessionId, prompt: [{ type: 'text', text }] },
-      { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = !!turn.barrier?.answered; turn.replied = Date.now(); this.turn = null; this.track(); } });
-    reply.catch(() => { if (this.turn === turn) { this.turn = null; this.track(); } });
+      { id, timeout: this.limits.turn, onReply: () => { turn.readCancel = !!turn.barrier?.answered; turn.replied = Date.now(); this.turn = null; this.track(); this.changed(); } });
+    reply.catch(() => { if (this.turn === turn) { this.turn = null; this.track(); this.changed(); } });
     let cancelledAt = null;
     if (cancel) {
       await this.until(() => this.turn !== turn || turn.updates > 0, this.limits.cancelDelay);
@@ -193,13 +217,17 @@ class Session {
         this.proc.request(BARRIER, {}, { timeout: this.limits.cancel, onReply: () => { barrier.answered = Date.now(); } }).catch(() => {});
       }
     }
+    if (steer) {
+      await this.until(() => this.turn !== turn || turn.updates > 0, this.limits.turn);
+      if (this.turn === turn) turn.steered = this.steer(steer);
+    }
     let m, timer;
     try {
       m = cancelledAt ? await Promise.race([reply, new Promise((_, reject) => { timer = setTimeout(reject, this.limits.cancel, new Timeout('取消后的 session/prompt', this.limits.cancel)); })])
         : await reply;
     } catch (e) {
       this.reportedExit = e instanceof Exited;
-      say.fail(cancel ? 'live.cancel' : 'live.turn', e instanceof Timeout && cancelledAt
+      say.fail(rule, e instanceof Timeout && cancelledAt
         ? `session/cancel 后 ${secs(this.limits.cancel)} 秒这一轮还没结束：Coda 会关掉托管连接与它的进程组，结果未知`
         : `这一轮没有结束：${e.message}`);
       return null;
@@ -210,14 +238,15 @@ class Session {
         say.info('live.service-retry', `服务暂不可用，按 Coda 策略 ${secs(wait)} 秒后第 ${attempt + 1} 次重试`);
         await delay(wait);
         accepted ||= failure.input === 'accepted';
-        return this.prompt(accepted ? continuationPrompt : text, { attempt: attempt + 1, accepted });
+        return this.prompt(accepted ? continuationPrompt : text, { as, attempt: attempt + 1, accepted });
       }
-      say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 回了错误 ${m.error.code}：${m.error.message}（Coda 把这一轮记为失败）`);
+      say.fail(rule, `session/prompt 回了错误 ${m.error.code}：${m.error.message}（Coda 把这一轮记为失败）`);
       return null;
     }
     const parsed = schemas.zPromptResponse.safeParse(m.result);
-    if (!parsed.success) { say.fail(cancel ? 'live.cancel' : 'live.turn', `session/prompt 的结果不合 ACP schema：${explain(parsed.error)}`); return null; }
+    if (!parsed.success) { say.fail(rule, `session/prompt 的结果不合 ACP schema：${explain(parsed.error)}`); return null; }
     const stop = m.result.stopReason;
+    if (rule !== 'live.turn' && !cancel) return stop;
     if (!cancel) {
       say.pass('live.turn', `一轮结束：stopReason ${stop}，${secs(Date.now() - turn.started)} 秒，${turn.updates} 条 session/update${turn.text ? `，回复「${short(turn.text)}」` : ''}`);
       if (!turn.text) say.warn('live.reply', '这一轮没有回复文字（agent_message_chunk）');
@@ -234,6 +263,13 @@ class Session {
         ? '读到 session/cancel 时它已经做完（之后没再做什么，随即答复）' : '答复写出时还没读到 session/cancel（先于紧跟取消发的探测请求的答复）'}，取消送到前这一轮已经结束，不算没停`);
     }
     return stop;
+  }
+  // `_session/steering` as Coda sends it: the agent's answer (`{ outcome, … }`), or `{ error }`.
+  async steer(text) {
+    try {
+      const m = await this.proc.request(STEERING, steeringParams(this.sessionId, text), { timeout: this.limits.steer });
+      return m.error ? { error: `回了错误 ${m.error.code}：${m.error.message}` } : m.result ?? {};
+    } catch (e) { this.reportedExit = e instanceof Exited; return { error: e.message }; }
   }
   // Waits for every open wait to end, `limit` at most; with `cancel`, stops the first turn of its own the agent takes.
   async settle(limit, { cancel = false } = {}) {
@@ -284,8 +320,46 @@ async function inputEnd({ agent, plugin, base, limits, say }) {
   } finally { proc.kill(); }
 }
 
-async function live(session, prompt, limits, say) {
+// The first turn asks for the word in the session instructions (docs/agent-protocol.md「会话指令」): they are to be in the
+// agent's context before it, whether its own system prompt took them or they went in front of the user's input.
+async function instructions(session, word, limits, say) {
+  if (!session.instructed) { say.skip('live.instructions', '没声明会话指令：Coda 不发 systemPrompt，指令是否生效查不了'); return true; }
+  if (!await session.prompt(CHECK_QUESTION, { as: 'live.instructions' })) return false;
+  const text = session.last.text;
+  if (text.includes(word)) say.pass('live.instructions', `会话指令在第一轮之前生效：第一轮问指令里的检查词，回复里有 ${word}`);
+  else say.fail('live.instructions', `会话指令没在第一轮之前生效：session/new 的 systemPrompt 里写了检查词 ${word}，第一轮问它，回复${text ? `「${short(text)}」` : '没有文字'}，没有说出它。`
+    + '有原生系统提示词入口的放在那里；没有的，在原生会话第一次 session/prompt 时把指令作为单独、明确分隔的一段放在用户输入前面送入');
+  await delay(limits.pause);
+  return true;
+}
+
+// docs/agent-protocol.md「插话」: Coda steers only a turn of its own under way, but the turn may have ended by the time the
+// message is read. One that has is answered promptRequired, and the agent takes no turn of its own for it; one under way
+// takes it in (injected) and still ends with the original `session/prompt`. Anything else Coda records as unknown.
+async function steering(session, limits, say) {
+  if (!session.steering) { say.skip('live.steering', '没声明插话（_meta.steering.supported）：用户「立即插话」时 Coda 停止这一轮，结束后再把消息作为下一轮发出'); return; }
+  const answer = result => result.error ?? (result.outcome ? `outcome ${result.outcome}` : `结果 ${short(JSON.stringify(result))}`);
+  if (!await session.until(() => !session.autonomous, limits.settle)) { say.warn('live.steering', `自主轮次 ${secs(limits.settle)} 秒还没结束，插话没查`); return; }
+  const before = session.idleWork.length, late = await session.steer(STEER_LATE);
+  if (session.proc.exit) return;
+  await delay(limits.steerQuiet);
+  const work = session.idleWork.slice(before);
+  if (late.outcome !== 'promptRequired') say.fail('live.steering', `一轮已经结束时发 ${STEERING}，回了 ${answer(late)}：要回 promptRequired（reason noRunningTurn），消息不收、也不自己另开一轮；Coda 把其他答复记为结果未知，不再把消息作为下一轮发出`);
+  else if (work.length) say.fail('live.steering', `一轮已经结束时发 ${STEERING}，回了 promptRequired，随后却自己说起话来（${work.length} 条 session/update：${[...new Set(work)].join('、')}）：promptRequired 的消息没被接收，Agent 不得自己另开一轮，Coda 会把它作为下一轮发出`);
+  else say.pass('live.steering', `一轮已经结束时插话：回 promptRequired${late.reason ? `（${late.reason}）` : ''}，${secs(limits.steerQuiet)} 秒里没有自己另开一轮`);
+  await delay(limits.pause);
+  const stop = await session.prompt(STEER_TURN, { steer: STEER_TEXT, as: 'live.steering' }), turn = session.last;
+  if (!turn.steered) { if (stop) say.info('live.steering', `这一轮在说出第一句之前就结束了（stopReason ${stop}），一轮进行中的插话没机会发`); return; }
+  const steered = await turn.steered;
+  if (!STEERING_OUTCOMES.includes(steered.outcome)) say.fail('live.steering', `一轮进行中发 ${STEERING}，回了 ${answer(steered)}：要么 injected（加进这一轮），要么 promptRequired（这一轮已经结束）；Coda 把其他答复记为结果未知`);
+  else if (!stop) return;
+  else if (steered.outcome === 'injected') say.pass('live.steering', `一轮进行中插话：injected，原来的 session/prompt 照常结束（stopReason ${stop}，${turn.updates} 条 session/update${turn.text ? `，回复「${short(turn.text)}」` : ''}）`);
+  else say.info('live.steering', `一轮进行中插话：回 promptRequired，插话到时这一轮已经结束（stopReason ${stop}）`);
+}
+
+async function live(session, { prompt, word }, limits, say) {
   session.live = true;
+  if (!await instructions(session, word, limits, say)) return;
   if (!await session.prompt(prompt)) return;
   const settled = await session.settle(limits.settle), waits = session.waits.registered;
   if (waits.length) {
@@ -294,6 +368,7 @@ async function live(session, prompt, limits, say) {
       : `；${secs(limits.settle)} 秒后还有 ${session.waits.open.length} 个没结束（定时与长任务可以这样，不算失败）`}`);
     if (session.lastAutonomous?.text) say.info('live.autonomous', `自主轮次的回复「${short(session.lastAutonomous.text)}」`);
   } else say.info('live.waits', '这一轮没有报 Agent 活动（_coda/wait）');
+  await steering(session, limits, say);
   // A second turn, stopped; and a turn of the agent's own that it brings about, stopped too. Coda sends nothing while a turn
   // of the agent's own is under way: a message waits for it to end.
   await new Promise(resolve => setTimeout(resolve, limits.pause));
@@ -311,21 +386,22 @@ async function live(session, prompt, limits, say) {
 export async function checkAgent({ agent, pluginDir, settings = {}, dependencies = {}, live: running = false, prompt = '只回复 ok', limits: given = {}, say }) {
   const limits = { ...LIMITS, ...given }, temp = temporary('coda-plugin-check-'), base = temp.dir;
   const scopes = { handshake: say('handshake'), live: say('live') }, sessions = [], plugin = { pluginDir, settings, dependencies };
+  const word = `coda-${randomBytes(3).toString('hex')}`, instructions = instructionsFor(word);
   try {
-    const session = new Session({ agent, plugin, base, say: scopes, limits });
+    const session = new Session({ agent, plugin, base, say: scopes, limits, instructions });
     sessions.push(session);
     const opened = await session.open();
-    if (opened === 'ok' && running) await live(session, prompt, limits, scopes.live);
+    if (opened === 'ok' && running) await live(session, { prompt, word }, limits, scopes.live);
     else if (running) scopes.live.skip('live.skipped', opened === 'signed-out' ? '未登录，一轮跳过' : '握手没过，一轮跳过');
     else scopes.live.skip('live.skipped', '一轮要 --live（会真的发一条提示词，可能要登录、花额度）');
     await session.finish(scopes.handshake);
     if (opened !== 'failed') await inputEnd({ agent, plugin, base, limits, say: scopes.handshake });
     if (opened !== 'ok' || !running) return;
     if (!session.canLoad) { scopes.live.skip('live.load', '没声明 loadSession：Coda 不会要求恢复，session/load 不查'); return; }
-    const again = new Session({ agent, plugin, base, say: scopes, limits });
+    const again = new Session({ agent, plugin, base, say: scopes, limits, instructions });
     sessions.push(again);
     again.live = true;
-    if (await again.open(session.sessionId) === 'ok') scopes.live.pass('live.load', `新进程 session/load 接上了会话 ${session.sessionId}`);
+    if (await again.open(session.sessionId) === 'ok') scopes.live.pass('live.load', `新进程 session/load 接上了会话 ${session.sessionId}${again.instructed ? '（同样带着会话指令）' : ''}`);
     await again.finish(scopes.live);
   } finally {
     for (const session of sessions) session.proc.kill();

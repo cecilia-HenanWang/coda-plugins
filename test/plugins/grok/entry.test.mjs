@@ -6,6 +6,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir } from '../plugin.mjs';
+import { MINIMUM, needed, older } from '../../../plugins/grok/scripts/setup.mjs';
+import { relaysInstructions } from '../relay.mjs';
 
 const manifest = JSON.parse(readFileSync(join(pluginDir('grok'), 'package.json')));
 const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
@@ -45,4 +47,18 @@ test('Grok mode selection takes effect in the same process, preserving options; 
   for (const params of [{ sessionId: 'native', modeId: 'missing' }, { sessionId: 'missing', modeId: 'auto' }]) {
     assert.equal((await p.request('session/set_mode', params, { timeout: 5000 })).error.code, -32602);
   }
+});
+
+test('the entry gives Grok the session instructions on a new session\'s first prompt only, never as a parameter', t =>
+  relaysInstructions(t, 'grok', '.grok/bin/grok', ['agent', '--no-leader', 'stdio']));
+
+test('setup installs a missing or broken Grok CLI, upgrades one older than the entry was checked against, and keeps a newer one', () => {
+  const run = (status, stdout = '') => () => ({ status, stdout, stderr: '' });
+  assert.equal(MINIMUM, '1.0.52');
+  assert.equal(needed(null).action, 'install');
+  assert.equal(needed('/bin/grok', run(1)).action, 'install');
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.51\n')), { action: 'upgrade', reason: 'Grok CLI 1.0.51 低于所需的 1.0.52' });
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.0.52\n')), { action: 'none', version: '1.0.52' });
+  assert.deepEqual(needed('/bin/grok', run(0, 'grok 1.1.0 (abc)\n')), { action: 'none', version: '1.1.0' });
+  assert.ok(older('1.0.9', '1.0.52') && !older('1.0.52', '1.0.52') && !older('2.0.0', '1.9.99'));
 });

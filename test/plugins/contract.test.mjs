@@ -1,6 +1,7 @@
 // The checker against this repository's own agent entries, each with what it drives stood in for, so that no login is
 // needed and nothing of this machine's is touched: Claude with the fixture SDK, Codex with a fixture app-server, Kimi with
-// the checker's honest fake agent as `kimi acp`, Grok with a fixture CLI. They pass every level, as Coda holds them.
+// the checker's honest fake agent as `kimi acp`, `opencode acp` and `cursor-agent acp`, Grok with a fixture CLI. They pass
+// every level, as Coda holds them.
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,4 +69,12 @@ test('grok, its approval-mode entry with a fake Grok CLI', async () => {
   program(join(home, '.grok/bin/grok'), at('./grok/fixture.mjs'));
   const report = await check('grok', 'grok', { HOME: home, GROK_HOME: join(home, '.grok') });
   assertPasses(report, [...EVERY, 'live.load']);
+});
+
+test('opencode and cursor, their relays with a fake CLI', async () => {
+  for (const [id, binary] of [['opencode', '.opencode/bin/opencode'], ['cursor', '.local/bin/cursor-agent']]) {
+    const home = join(root, `${id}-home`);
+    program(join(home, binary), at('../fixtures/liar.mjs'));
+    assertPasses(await check(id, id, { HOME: home }), EVERY);
+  }
 });

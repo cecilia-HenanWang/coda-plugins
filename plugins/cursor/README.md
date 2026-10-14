@@ -1,20 +1,22 @@
 # Cursor
 
-把 [Cursor](https://cursor.com) 的 Agent 接进 Coda。插件只有清单：运行机上的 Cursor CLI 自己讲 ACP（`cursor-agent acp`），
-Coda 每个会话启动一个这样的进程，不用适配器，也不登记等待项（和 Coda 内置的 Grok、OpenCode 同一类）。
+把 [Cursor](https://cursor.com) 的 Agent 接进 Coda。运行机上的 Cursor CLI 自己讲 ACP（`cursor-agent acp`），插件的入口（`agent/entry.mjs`）
+把它作为子进程逐条转发，只多做会话指令：声明它，并在原生会话第一轮把指令放在用户输入前面送入。Coda 每个会话启动一个这样的进程，
+不登记等待项（和 Coda 内置的 Grok、OpenCode 同一类）。
 
 > 状态：清单已过契约检查（清单级）与 Coda 的「读取来源」；**还没有和真实的 Cursor 账号跑过**握手与一轮，等有付费账号后按文末的验收步骤补。
 
 ## 安装
 
-1. **运行机装 Cursor CLI**（每台要跑 Cursor 会话的机器各装一次，Coda 不替你装）：
+1. **运行机装 Cursor CLI**：插件的设置动作（`scripts/setup.mjs`）在你安装或更新插件时于每台机器上运行，没有能运行的 Cursor CLI 就用官方安装程序装上；
+   已有的不动（没有已知的版本下限，它自己会更新）。也可以自己装：
 
    ```sh
    curl https://cursor.com/install -fsS | bash
    ```
 
    只支持 macOS 与 Linux 的 x64、arm64。装到 `~/.local/share/cursor-agent/versions/<版本>`，并在 `~/.local/bin` 建 `agent` 与 `cursor-agent` 两个链接；默认自动更新。
-   清单先找 `~/.local/bin/cursor-agent`，找不到再用 `PATH` 上的 `cursor-agent`：Coda 后端服务的 `PATH` 不一定有 `~/.local/bin`；
+   入口先找 `~/.local/bin/cursor-agent`，找不到再用 `PATH` 上的 `cursor-agent`：Coda 后端服务的 `PATH` 不一定有 `~/.local/bin`；
    不用 `agent` 这个名字，它太通用，安装脚本也会无条件覆盖它。
 
 2. **登录**（在运行机的终端里，用运行 Coda 后端的那个账户）：
@@ -31,10 +33,11 @@ Coda 每个会话启动一个这样的进程，不用适配器，也不登记等
    确认里能看到会运行的命令原文：
 
    ```sh
-   c="$HOME/.local/bin/cursor-agent"; [ -x "$c" ] || c=cursor-agent; exec "$c" acp
+   exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"
+   exec "$CODA_NODE" "$CODA_PLUGIN_PATH/scripts/setup.mjs"
    ```
 
-   装好后新任务的 Agent 选择里出现 Cursor。插件在空间里共享，但 Cursor CLI 要在每台运行机上自己装：没装的那台，插件照样显示已装好，
+   装好后新任务的 Agent 选择里出现 Cursor。插件在空间里共享，设置动作在每台机器上各装一次 Cursor CLI；装不上的那台，
    会话启动失败并提示清单的 `setupHint`。
 
 ## 在 Coda 里是什么样
@@ -61,7 +64,7 @@ Cursor 不可用或打折的 Coda 功能：
 | 用量、上下文占用 | Cursor 不报 |
 | 未登录 | 第一次没登录时 Coda 照 ACP 的 -32000 提示「Cursor 未登录」，但资源页没有 Cursor 面板可以「添加」：按上面在运行机终端登录。登录过期后 Cursor 不报错，只回一句「Please sign in」，Coda 认不出 |
 | 问答卡片 | Cursor 不用 ACP 的 elicitation，Coda 收不到它的提问；`cursor/create_plan` 等 Cursor 私有请求，Coda 回 -32601，Cursor 会降级 |
-| 给 Agent 的说明 | 经 Coda MCP 服务器的 `instructions` 给；Cursor 是否把 MCP 服务器的说明交给模型没有查到 |
+| 给 Agent 的说明 | Cursor 的 ACP 不接受 `systemPrompt`：入口把 Coda 的会话指令作为单独一段放在原生会话第一条消息前面，分量不如系统提示词 |
 | 选模型的副作用 | 每个会话一个进程，互不影响；但 Cursor 会把选择写回 `~/.cursor/cli-config.json`，改了运行机上终端 Cursor 的默认模型 |
 | 启动 | 进程启动约 12 秒、新建会话约 2.5 秒（社区测量） |
 | 断线 | Cursor 在 ACP 下遇到传输错误不重试，长轮次中途断线就结束 |

@@ -15,7 +15,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const at = path => join(root, path);
 const LIAR = at('test/fixtures/liar.mjs'), ICON = at('templates/agent/icons/echo.pdf');
 // Short enough for a test, long enough for the templates.
-const limits = { turn: 10_000, settle: 6_000, cancel: 2_000, exit: 1_000, cancelReply: 1_000 };
+const limits = { turn: 10_000, settle: 6_000, cancel: 2_000, exit: 1_000, cancelReply: 1_000, steerQuiet: 300 };
 const temps = [];
 after(() => { for (const dir of temps) rmSync(dir, { recursive: true, force: true }); });
 
@@ -41,9 +41,12 @@ function plugin({ mode = 'honest', agent = {}, manifest = {}, files = {} } = {})
 describe('this repository', () => {
   test('templates/agent passes every level', async () => {
     const { report } = await checkPlugin(at('templates/agent'), { live: true, limits });
-    assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files', 'handshake.initialize', 'handshake.new', 'handshake.sigterm',
-      'handshake.exit-input', 'live.turn', 'live.cancel', 'live.updates']);
+    assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files', 'handshake.initialize', 'handshake.system-prompt', 'handshake.new',
+      'handshake.sigterm', 'handshake.exit-input', 'live.instructions', 'live.turn', 'live.steering', 'live.cancel', 'live.updates']);
     assert.ok(rules(report, 'skip').includes('live.load'), 'session/load is not asked of an agent that does not declare it');
+    // Late, it is not taken; under way, it is, and the turn ends as it would.
+    assert.deepEqual(report.items.filter(item => item.rule === 'live.steering').map(item => item.message.split('：')[0]), ['一轮已经结束时插话', '一轮进行中插话']);
+    assert.match(report.items.filter(item => item.rule === 'live.steering')[1].message, /injected.*插话：数完后再说一句/);
   });
   test('templates/agent registers a wait and takes a turn of its own', async () => {
     const { report } = await checkPlugin(at('templates/agent'), { live: true, prompt: 'wait 演示', limits });
@@ -66,7 +69,7 @@ describe('this repository', () => {
   test('plugins/cursor passes the manifest level', async () => {
     const { report, plugin: cursor } = await checkPlugin(at('plugins/cursor'), { manifestOnly: true });
     assertPasses(report, ['manifest.name', 'manifest.agents', 'source.files']);
-    assert.equal(cursor.agents[0].command, 'c="$HOME/.local/bin/cursor-agent"; [ -x "$c" ] || c=cursor-agent; exec "$c" acp');
+    assert.equal(cursor.agents[0].command, 'exec "$CODA_NODE" "$CODA_PLUGIN_PATH/agent/entry.mjs"');
   });
   test('the command line exits 0 on a pass and 1 on a failure', () => {
     const run = (...args) => spawnSync(process.execPath, [at('bin/check.mjs'), ...args], { encoding: 'utf8' });
@@ -96,6 +99,10 @@ describe('a liar fails on the rule it breaks', () => {
     ['slow-end-turn', 'live.cancel-reason', { live: true }],
     ['ignore-sigterm', 'handshake.sigterm', {}],
     ['load-fails', 'handshake.load', { live: true }],
+    ['no-system-prompt', 'handshake.system-prompt', { live: true }],
+    ['ignore-system-prompt', 'live.instructions', { live: true }],
+    ['steer-own-turn', 'live.steering', { live: true }],
+    ['steer-started', 'live.steering', { live: true }],
   ];
   for (const [mode, rule, options] of cases) test(mode, async () => {
     const { report } = await checkPlugin(plugin({ mode }), { ...options, limits });
@@ -103,7 +110,18 @@ describe('a liar fails on the rule it breaks', () => {
   });
   test('an honest one passes', async () => {
     const { report } = await checkPlugin(plugin(), { live: true, limits });
-    assertPasses(report, ['live.turn', 'live.cancel']);
+    assertPasses(report, ['handshake.system-prompt', 'live.instructions', 'live.turn', 'live.cancel']);
+    assert.ok(rules(report, 'skip').includes('live.steering'), 'steering is optional');
+  });
+  test('one that steers answers promptRequired once its turn has ended', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'steer' }), { live: true, limits });
+    assertPasses(report, ['live.steering']);
+    // Its turns end as soon as they say something: the message under way finds the turn ended too.
+    assert.match(report.items.findLast(item => item.rule === 'live.steering').message, /一轮进行中插话：回 promptRequired/);
+  });
+  test('the session instructions go with session/load too', async () => {
+    const { report } = await checkPlugin(plugin({ mode: 'load-fails' }), { live: true, limits });
+    assert.match(report.failures.find(f => f.rule === 'handshake.load').message, /session\/load 回了错误 -32002：会话不见了（收到了检查词 coda-[0-9a-f]{6} 的会话指令）/);
   });
   test('signed out is skipped, not failed', async () => {
     const { report } = await checkPlugin(plugin({ mode: 'signed-out' }), { live: true, limits });
@@ -208,6 +226,15 @@ describe('manifests Coda does not take', () => {
   test('a command Coda answers for itself, or one on two lines', async () => {
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'gh', command: 'exec gh' }] } } }, 'manifest.commands', /gh、coda-run/);
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.commands');
+  });
+  test('a setup action with a key Coda does not read, or on two lines; services that repeat', async () => {
+    await manifestFails({ manifest: { contributes: { setup: { command: 'exec true', title: '安装' } } } }, 'manifest.setup', /不支持的键：title/);
+    await manifestFails({ manifest: { contributes: { setup: { command: 'a\nb' } } } }, 'manifest.setup', /一行/);
+    await manifestFails({ manifest: { contributes: { services: ['space', 'space'] } } }, 'manifest.services', /不重复/);
+  });
+  test('a setup action and services are taken, and the setup action is not run', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { setup: { command: 'exec false' }, services: ['space'] } } }), { manifestOnly: true });
+    assertPasses(report, ['manifest.setup', 'manifest.services']);
   });
   test('a group with a key Coda does not read', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity', note: '' }],
     configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.groups'));

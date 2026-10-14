@@ -3,7 +3,9 @@
 // known, again whenever they change, at most once every `every`, and before Kimi's answer to a prompt is passed on, so
 // that what that turn took up is not left as if Kimi still had it to handle. A message Kimi sends outside a prompt while
 // nothing is handled may begin a turn of its own: it waits for a look too, so that what Kimi handles there is told first.
-// Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay.
+// Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for Coda's session
+// instructions, which go in front of a new session's first prompt either way (instructions.mjs).
+import { SessionInstructions } from './instructions.mjs';
 import { SUPPORTED, kimiSession } from './observe.mjs';
 import { KimiWaits } from './waits.mjs';
 
@@ -16,12 +18,15 @@ export class KimiRelay {
     this.plain = (env.CODA_DISABLE_RUNTIME_PATCHES ?? '').split(',').map(s => s.trim()).includes('kimi');
     // Coda's requests whose answers are read here, by id; the prompts going.
     this.asked = new Map(); this.prompts = new Set();
-    this.version = null; this.session = null; this.waits = null; this.content = [];
+    this.version = null; this.session = null; this.waits = null; this.content = []; this.instructions = new SessionInstructions();
     // What Kimi said, passed on in order behind any message that waits for a look.
     this.queue = Promise.resolve();
     this.looking = null; this.again = false; this.lookedAt = -Infinity; this.timer = null; this.watching = null; this.closed = false;
   }
   fromCoda(message) {
+    const { agent, coda } = this.instructions.fromCoda(message);
+    if (coda) { this.queue = this.queue.then(() => this.say(coda)); return; }
+    message = agent;
     if (!this.plain && 'id' in message && typeof message.method === 'string') {
       if (message.method === 'initialize') this.asked.set(message.id, { initialize: true });
       else if (['session/new', 'session/load'].includes(message.method)) this.asked.set(message.id, { cwd: message.params?.cwd, sessionId: message.params?.sessionId });
@@ -31,6 +36,7 @@ export class KimiRelay {
   }
   fromAgent(message) {
     if (!record(message)) return;
+    message = this.instructions.fromAgent(message);
     const answer = 'id' in message && !('method' in message), asked = answer ? this.asked.get(message.id) : undefined;
     if (asked) this.asked.delete(message.id);
     if (asked?.initialize && record(message.result)) {

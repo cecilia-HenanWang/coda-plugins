@@ -15,7 +15,7 @@ test('Coda is told the entry reports its waits, and codex-acp is asked for subag
   const [initialize] = waits.fromCoda({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: { _meta: { coda: { waits: {} } } } } }).agent;
   assert.deepEqual(initialize.params.clientCapabilities._meta, { coda: { waits: {} }, jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks'] } } });
   const [answer] = waits.fromAgent({ jsonrpc: '2.0', id: 0, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-  assert.deepEqual(answer.result.agentCapabilities, { loadSession: true, _meta: { coda: { waits: {} } } });
+  assert.deepEqual(answer.result.agentCapabilities, { loadSession: true, sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {} } } });
 });
 
 test('subagents and background commands are waits; a continued subagent is a new wait of the same child session', () => {

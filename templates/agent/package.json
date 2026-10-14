@@ -2,7 +2,7 @@
   "name": "echo",
   "displayName": "回声（模板）",
   "description": "最小的 Agent 插件模板：手写 ACP 的回声 Agent，没有依赖；提示词以 wait 开头时演示等待项登记与自主轮次。",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "contributes": {
     "agents": [
       {

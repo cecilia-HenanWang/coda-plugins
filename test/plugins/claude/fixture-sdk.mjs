@@ -150,6 +150,8 @@ export function fixtureSdk(argv = []) {
         this.system('commands_changed', { commands: [...commands, { name: 'terminal-only', description: 'local terminal command' },
           { name: 'new-skill', description: 'New skill', argumentHint: 'argument' }] });
       } else if (text === 'history') this.text(this.entries.filter(e => e.type === 'user').map(e => e.text).join('|'));
+      // The checker's question about the session instructions, answered from the system prompt as a model would.
+      else if (text === 'What is the Coda check word?') this.text(/reply with exactly (\S+) and nothing else/.exec(this.options.systemPrompt?.append ?? '')?.[1] ?? '不知道');
       else this.text(text);
       this.emit({ type: 'result', subtype: 'success', is_error: false, stop_reason: this.controller.signal.aborted ? 'interrupt' : 'end_turn',
         user_message_uuid: input.uuid, usage: { input_tokens: 10 }, modelUsage: { [this.model]: { contextWindow: 1000 } }, total_cost_usd: 0 });

@@ -16,8 +16,15 @@ import { permissionRequest } from './permissions.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
 
-// How long the instructions of Coda's MCP server may be (docs/agent-protocol.md「ACP 部分」).
-const INSTRUCTIONS_LIMIT = 16_384;
+// Coda's session instructions (docs/agent-protocol.md「会话指令」), ACP's `systemPrompt`: its text, '' when there is none. Only
+// text appended to the agent's own is understood; anything else is refused before a session opens.
+export function sessionInstructions(systemPrompt) {
+  if (systemPrompt === undefined || systemPrompt === null) return '';
+  if (systemPrompt.mode !== 'append') throw new RequestError(-32602, '会话指令只支持 append 模式');
+  const { content } = systemPrompt;
+  if (!Array.isArray(content) || content.some(block => block?.type !== 'text' || typeof block.text !== 'string')) throw new RequestError(-32602, '会话指令只接受文本块');
+  return content.map(block => block.text).join('\n\n');
+}
 const text = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text).join('\n') : '';
 const interrupted = m => ['interrupt', 'cancelled'].includes(m.stop_reason) || ['aborted_streaming', 'aborted_tools'].includes(m.terminal_reason);
 const errorText = m => (m.errors?.length ? m.errors : [m.result || m.subtype]).join('\n');
@@ -53,9 +60,10 @@ export class ClaudeSession {
   connect(stream) {
     this.connection = agent({ name: 'coda-claude' })
       .onRequest('initialize', () => ({ protocolVersion: PROTOCOL_VERSION, agentInfo: { name: 'coda-claude', version: '1' },
-        agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {} }, _meta: { coda: { waits: {} } } } }))
-      .onRequest('session/new', ({ params }) => this.open(params))
-      .onRequest('session/load', ({ params }) => this.open(params, params.sessionId))
+        agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } } }))
+      // The SDK's own reading of these drops what its schema does not name, `systemPrompt` among them: they are read as sent.
+      .onRequest('session/new', params => params ?? {}, ({ params }) => this.open(params))
+      .onRequest('session/load', params => params ?? {}, ({ params }) => this.open(params, params.sessionId))
       .onRequest('session/set_config_option', ({ params }) => this.configure(params.configId, params.value))
       .onRequest('session/set_mode', async ({ params }) => { await this.configure('mode', params.modeId); return {}; })
       .onRequest('session/prompt', ({ params }) => this.prompt(params))
@@ -85,8 +93,9 @@ export class ClaudeSession {
   }
   options() { return configOptions(this.models, this.current); }
 
-  async open({ cwd, mcpServers = [], additionalDirectories = [] }, resume) {
+  async open({ cwd, mcpServers = [], additionalDirectories = [], systemPrompt }, resume) {
     if (this.phase !== 'new') throw failure('每个 Claude 进程只有一个会话', -32600);
+    const instructions = sessionInstructions(systemPrompt);
     this.phase = 'starting';
     try {
       const dir = await realpath(cwd);
@@ -100,16 +109,16 @@ export class ClaudeSession {
         [name, { command, args, ...(env.length ? { env: Object.fromEntries(env.map(variable => [variable.name, variable.value])) } : {}) }]));
       this.query = this.sdk.query({ prompt: this.input, options: {
         permissionMode: 'default', settingSources: ['user', 'project', 'local'],
-        // What the clients render and what the project's plugins say come from Coda's MCP server (transport/mcp.mjs).
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        // Coda's session instructions (what its clients render, what the project's plugins say) follow Claude Code's own.
+        systemPrompt: { type: 'preset', preset: 'claude_code', ...(instructions ? { append: instructions } : {}) },
         // Sessions reach each other through Coda's send, which the user approves and both threads show. A native peer
         // message would start a turn Coda cannot attribute. Continuing a native subagent is in-process and unaffected.
         settings: { crossSessionInbound: 'refuse' },
         includePartialMessages: true, forwardSubagentText: true, cwd: dir,
         ...(Object.keys(servers).length ? { mcpServers: servers } : {}), ...(additionalDirectories.length ? { additionalDirectories } : {}),
         ...(resume ? { resume } : { sessionId: this.sessionId }),
-        // Claude Code cuts an MCP server's instructions at 2048 characters unless told otherwise; Coda's are longer. It reports running and idle only when asked: idle is what ends a task's wait.
-        env: { CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH: String(INSTRUCTIONS_LIMIT), ...environment, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
+        // Claude Code reports running and idle only when asked: idle is what ends a task's wait.
+        env: { ...environment, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
         // Stop supplies the complete list of scheduled wakeups. A CronCreate result alone cannot tell whether one was later
         // deleted or fired.
         hooks: { Stop: [{ hooks: [async input => {
