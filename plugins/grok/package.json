@@ -1,8 +1,8 @@
 {
   "name": "grok",
   "displayName": "Grok",
-  "description": "Grok Agent：运行机上的 Grok CLI 自己讲 ACP，每个会话一个进程；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
-  "version": "1.0.0",
+  "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
+  "version": "1.1.0",
   "contributes": {
     "agents": [
       {
@@ -12,11 +12,13 @@
           "light": "icons/grok.pdf",
           "template": true
         },
-        "command": "g=\"$HOME/.grok/bin/grok\"; [ -x \"$g\" ] || g=grok; exec \"$g\" agent --no-leader stdio",
+        "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/agent/entry.mjs\"",
         "modes": {
           "title": "审批模式",
           "unset": "按运行机配置",
-          "note": "审批沿用运行机的 Grok 配置。"
+          "auto": "auto",
+          "full": "always-approve",
+          "note": "切换对后续消息生效；新会话未选择时沿用运行机的 Grok 配置。"
         },
         "skillsDir": ".agents/skills",
         "configFiles": [
