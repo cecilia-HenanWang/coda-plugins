@@ -4,8 +4,8 @@
 // commit, and test/protocol-copy.test.mjs keeps the two together).
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
-// The Coda commit these rules were copied from (shared service-failure recovery).
-export const CODA_COMMIT = 'e76ac865c907e7309faa26051b5364451ce51c79';
+// The Coda commit these rules were copied from (session instructions, steering and a plugin's setup action).
+export const CODA_COMMIT = '3ce97f17fd898347e90374b6143ca18dbcd2e4ff';
 // The ACP version Coda speaks: the SDK's (backend/package.json pins @agentclientprotocol/sdk 1.4.0, as package.json here).
 export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
@@ -16,6 +16,17 @@ export const clientCapabilities = () => ({
   session: { compaction: {}, configOptions: { boolean: {} } },
   _meta: { coda: { waits: {} } },
 });
+// Session instructions (AcpSession.takesInstructions, initialize): ACP's unstable `systemPrompt`, sent only to an agent that
+// declares it, the same on `session/new` and `session/load`, in `append` mode, one text block (docs/agent-protocol.md「会话指令」).
+export const takesInstructions = init => init?.agentCapabilities?.sessionCapabilities?.systemPrompt != null;
+export const systemPrompt = text => ({ mode: 'append', content: [{ type: 'text', text }] });
+// Steering (AcpSession.supportsSteering, steer; docs/agent-protocol.md「插话」): declared beside the capabilities; sent only
+// while a turn of Coda's own is under way. `injected` joined it; `promptRequired` was not taken, the turn having ended;
+// anything else Coda records as unknown.
+export const STEERING = '_session/steering';
+export const supportsSteering = init => init?._meta?.steering?.supported === true;
+export const steeringParams = (sessionId, text) => ({ sessionId, prompt: [{ type: 'text', text }], _meta: { steering: { idleBehavior: 'promptRequired' } } });
+export const STEERING_OUTCOMES = ['injected', 'promptRequired'];
 // Service failures and the retry policy (backend/src/application/prompt-recovery.mjs).
 export function serviceFailure(error) {
   const failure = error?.data?._meta?.coda?.failure;
@@ -77,12 +88,18 @@ export const PANEL_ID = /^[a-z][a-z0-9-]{0,63}$/;
 export const POINT = /^[a-z][a-z0-9-]{0,39}$/;
 export const SETTING_KEY = /^[a-z][a-z0-9-]*(\.[a-z][A-Za-z0-9]*)+$/;
 export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
-export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'commands'];
+export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'commands', 'services',
+  'setup'];
+// The bundled services a plugin turns on (`contributes.services`, docs/supervisor.md「独立服务进程」): their IDs.
+export const SERVICE = /^[a-z][a-z0-9-]{0,63}$/;
 // A command a plugin puts on every session's and step's PATH (`contributes.commands`): its name, as a shell finds it, which
 // may not be one of Coda's own; what runs for it, one line.
 export const COMMAND = /^[a-z][a-z0-9-]{0,39}$/;
 export const CODA_COMMANDS = ['gh', 'coda-run'];
 export const COMMAND_LIMIT = 4000;
+// A plugin's setup action (`contributes.setup`): `{ command }`, one line as a panel's command is; it may install software, so
+// the checker reads it and does not run it.
+export const SETUP_KEYS = ['command'];
 export const INSTRUCTIONS_LIMIT = 200;
 export const ICON_LIMIT = 32 * 1024;
 export const AGENT_LIMITS = { displayName: 40, modeTitle: 10, modeUnset: 20, modeNote: 100, modeId: 200, setupHint: 200, command: 4000, configFiles: 16, path: 1000 };

@@ -9,7 +9,7 @@ import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { inflateSync } from 'node:zlib';
 import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_PLUGINS, BUILTIN_REPOSITORY, CAPABILITY,
   CODA_COMMANDS, COMMAND, COMMAND_LIMIT, CONTRIBUTES, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
-  SEGMENT, SETTING_KEY, SIZE_LIMIT } from './coda.mjs';
+  SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT } from './coda.mjs';
 
 class Invalid extends Error {}
 const check = (condition, message) => { if (!condition) throw new Invalid(message); };
@@ -305,6 +305,18 @@ export function checkManifest(dir, say) {
     `contributes.commands 须为 { name, command } 的数组：name 是命令名（小写字母、数字和「-」，以字母开头，不重复，不能是 Coda 自己的 ${CODA_COMMANDS.join('、')}），command 是一行命令`);
     return commands;
   }, commands => commands.length ? `会话 PATH 上的命令 ${commands.map(c => c.name).join('、')}` : null) ?? [];
+  part('manifest.services', () => {
+    const services = contributes.services ?? [];
+    check(Array.isArray(services) && services.every(id => typeof id === 'string' && SERVICE.test(id)) && new Set(services).size === services.length,
+      'contributes.services 须为服务 ID 的数组，不重复');
+    return services;
+  }, services => services.length ? `开启随包服务 ${services.join('、')}：没有已安装插件开启的服务不运行` : null);
+  part('manifest.setup', () => {
+    if (contributes.setup === undefined) return null;
+    object(contributes.setup, 'contributes.setup');
+    keys(contributes.setup, SETUP_KEYS, 'contributes.setup');
+    return text(contributes.setup.command, PANEL_LIMITS.command, 'contributes.setup 的 command');
+  }, command => command ? `设置动作（contributes.setup）：一行命令；检查不运行它（可能装软件）` : null);
   for (const g of groups) { const problem = taken('组', g.name, BUILTIN_GROUPS); if (problem) say.fail('manifest.claims', problem); }
   for (const c of commands) { const problem = taken('命令', c.name, BUILTIN_COMMANDS); if (problem) say.fail('manifest.claims', problem); }
 

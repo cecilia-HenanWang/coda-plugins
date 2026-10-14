@@ -17,6 +17,11 @@ createInterface({ input: process.stdin }).on('line', m => {
   if (result) { send({ id: m.id, result }); return; }
   if (m.method === 'session/prompt') {
     if (m.params.prompt[0].text === 'hold') { held = m.id; say('holding'); return; }
+    // The checker's question about the session instructions, answered from what came in front of it as a model would.
+    const given = m.params.prompt.map(block => block.text ?? '').join('\n');
+    if (given.includes('What is the Coda check word?')) {
+      say(/reply with exactly (\S+) and nothing else/.exec(given)?.[1] ?? '不知道'); send({ id: m.id, result: { stopReason: 'end_turn' } }); return;
+    }
     say(JSON.stringify({ mode, effort, pid: process.pid })); send({ id: m.id, result: { stopReason: 'end_turn' } }); return;
   }
   send({ id: m.id, error: { code: -32601, message: 'Method not found' } });

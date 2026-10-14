@@ -1,7 +1,10 @@
 // What codex-acp says of the work it has going beside a turn, in JetBrains AIR (its subagents and the commands it moved to
 // the background), said to Coda as waits of its own (docs/agent-protocol.md「_coda/wait」); and a stop Coda asks of one, asked
 // of codex-acp the AIR way. A continued subagent is another session to codex-acp (`X:generation:N`) and the same one to
-// Coda: every session it names to Coda is `X`, and each run of it a wait of its own.
+// Coda: every session it names to Coda is `X`, and each run of it a wait of its own. Coda's session instructions are checked
+// here and handed to the patched codex-acp in the request's `_meta` (instructions.mjs).
+import { INSTRUCTIONS, sessionInstructions } from './instructions.mjs';
+
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
 const string = value => typeof value === 'string' && value.length > 0;
 const base = id => id.replace(/:generation:\d+$/, '');
@@ -23,9 +26,16 @@ export class CodexWaits {
       const capabilities = record(message.params.clientCapabilities) ? message.params.clientCapabilities : {};
       const meta = record(capabilities._meta) ? capabilities._meta : {};
       message = { ...message, params: { ...message.params, clientCapabilities: { ...capabilities, _meta: { ...meta, jetbrains: { air: AIR } } } } };
-    } else if (message.method === 'session/new') this.asked.set(message.id, 'session');
+    } else if (message.method === '_coda/wait/stop' && 'id' in message) return this.stop(message);
+    if (['session/new', 'session/load'].includes(message.method) && record(message.params)) {
+      let instructions;
+      try { instructions = sessionInstructions(message.params.systemPrompt); }
+      catch (error) { return { agent: [], coda: [{ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: error.message } }] }; }
+      const { systemPrompt, ...params } = message.params, meta = record(params._meta) ? params._meta : {};
+      message = { ...message, params: instructions ? { ...params, _meta: { ...meta, [INSTRUCTIONS]: instructions } } : params };
+    }
+    if (message.method === 'session/new') this.asked.set(message.id, 'session');
     else if (message.method === 'session/load' && string(message.params?.sessionId)) this.root = message.params.sessionId;
-    else if (message.method === '_coda/wait/stop' && 'id' in message) return this.stop(message);
     return { agent: [message], coda: [] };
   }
   // A command is stopped through the session that keeps it, the root; a subagent by cancelling its session.
@@ -83,10 +93,12 @@ export class CodexWaits {
     if (!record(message.result)) return message;
     if (asked === 'session' && string(message.result.sessionId)) this.root = message.result.sessionId;
     if (asked !== 'initialize') return message;
-    // It reports its waits.
+    // It reports its waits and takes Coda's session instructions; codex-acp itself declares steering (`_meta.steering`).
     const capabilities = record(message.result.agentCapabilities) ? message.result.agentCapabilities : {};
     const meta = record(capabilities._meta) ? capabilities._meta : {};
-    return { ...message, result: { ...message.result, agentCapabilities: { ...capabilities, _meta: { ...meta, coda: { waits: {} } } } } };
+    const sessions = record(capabilities.sessionCapabilities) ? capabilities.sessionCapabilities : {};
+    return { ...message, result: { ...message.result, agentCapabilities: { ...capabilities, sessionCapabilities: { ...sessions, systemPrompt: {} },
+      _meta: { ...meta, coda: { waits: {} } } } } };
   }
 }
 const cut = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : undefined;

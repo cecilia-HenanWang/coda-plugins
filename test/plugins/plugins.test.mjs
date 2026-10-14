@@ -4,15 +4,17 @@
 // one of its `extensionDependencies` declares it may use from that plugin's directory instead (CODA_PLUGIN_DEPENDENCIES).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { builtinModules } from 'node:module';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPlugin } from '../../check/index.mjs';
 import { claudeBinary } from '../../plugins/claude/scripts/login.mjs';
 import { codexCli } from '../../plugins/codex-accounts/scripts/app-server.mjs';
 import { pluginDir, resolveFrom } from './plugin.mjs';
+import { pluginEnv, run } from './command.mjs';
 
 const plugins = readdirSync(fileURLToPath(new URL('../../plugins', import.meta.url))).filter(id => existsSync(join(pluginDir(id), 'package.json')));
 const manifest = id => JSON.parse(readFileSync(join(pluginDir(id), 'package.json'), 'utf8'));
@@ -104,5 +106,25 @@ describe('the plugins here', () => {
   test('the Claude panel\'s login finds the CLI beside the plugin\'s own Claude SDK', () => {
     const binary = claudeBinary();
     assert.ok(binary && relative(join(pluginDir('claude'), 'node_modules', '@anthropic-ai'), binary).split(sep)[0].startsWith('claude-agent-sdk-'), binary);
+  });
+  test('the entries that relay a CLI\'s ACP carry the same session instructions, each its own copy', () => {
+    const copies = plugins.filter(id => existsSync(join(pluginDir(id), 'agent/instructions.mjs')) && id !== 'codex');
+    assert.deepEqual(copies.sort(), ['cursor', 'grok', 'kimi', 'opencode']);
+    for (const id of copies) assert.equal(readFileSync(join(pluginDir(id), 'agent/instructions.mjs'), 'utf8'), readFileSync(join(pluginDir('kimi'), 'agent/instructions.mjs'), 'utf8'), id);
+  });
+  // Where each plugin's setup finds its CLI first, and what a recent enough one says to `--version`.
+  const ready = { kimi: ['.kimi-code/bin/kimi', 'kimi 2.1.1', 'Kimi CLI 2.1.1'], grok: ['.grok/bin/grok', 'grok 1.0.52', 'Grok CLI 1.0.52'],
+    opencode: ['.opencode/bin/opencode', '1.19.0', 'OpenCode CLI 1.19.0'], cursor: ['.local/bin/cursor-agent', '2026.05.09-0afadcc', 'Cursor CLI 2026.05.09-0afadcc'] };
+  test('a setup, run as Coda runs it, ends well and installs nothing when the machine\'s CLI is recent enough', async t => {
+    assert.deepEqual(plugins.filter(id => manifest(id).contributes.setup).sort(), Object.keys(ready).sort(), 'codex and claude bring theirs as npm dependencies');
+    for (const [id, [binary, says, line]] of Object.entries(ready)) {
+      const home = mkdtempSync(join(tmpdir(), `coda-${id}-setup-`));
+      t.after(() => rmSync(home, { recursive: true, force: true }));
+      mkdirSync(join(home, dirname(binary)), { recursive: true });
+      writeFileSync(join(home, binary), `#!/bin/sh\n[ "$1" = --version ] && echo '${says}'\n`, { mode: 0o755 });
+      // No curl on the PATH: an install would fail rather than reach the network.
+      const ran = await run(manifest(id).contributes.setup.command, pluginEnv(id, { HOME: home, CODA_NODE: process.execPath, PATH: '/bin' }));
+      assert.deepEqual([ran.code, ran.stdout.trim(), ran.stderr], [0, line, ''], id);
+    }
   });
 });

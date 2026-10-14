@@ -11,10 +11,10 @@ plugins/codex/           Codex：入口在同一进程里运行锁定版本的 c
 plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（npm 依赖），面板「Claude」
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，面板「Kimi」
 plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，面板「Grok」
-plugins/opencode/        OpenCode：只有清单，运行机上的 opencode acp
+plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
-plugins/cursor/          Cursor：只有清单，运行机上的 Cursor CLI 自己讲 ACP
-templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示 Agent 活动与自主轮次
+plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
+templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
@@ -36,12 +36,27 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 | `codex` | `@agentclientprotocol/codex-acp` 1.12.0、`@openai/codex` 0.162.1；`overrides` 让 codex-acp 用同一个 `@openai/codex` | — |
 | `claude` | `@agentclientprotocol/sdk` 1.4.0、`@anthropic-ai/claude-agent-sdk` 0.3.296（平台二进制是 SDK 自己的可选依赖） | — |
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
-| `kimi` | 无 | Kimi CLI（面板可从 Coda 安装、登录） |
-| `grok` | 无 | Grok CLI（面板可从 Coda 安装、登录） |
-| `opencode` | 无 | 已安装并登录的 `opencode` |
+| `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
+| `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
+| `opencode` | 无 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
+
+### 会话指令与设置动作
+
+Coda 的会话指令（`systemPrompt`）各插件都声明并接受，只接受 `append` 模式的文本块，其他回 -32602、不建立会话：
+Claude 追加在 `claude_code` 预设的系统提示词后面；Codex 经 `thread/start`、`thread/resume` 作为 `developerInstructions` 交给 Codex，
+接在会话目录下 Codex 自己配置的 `developer_instructions`（`config/read`）后面
+（codex-acp 按 ACP 的 schema 读请求会丢掉 `systemPrompt`，入口改放在请求的 `_meta` 里交给打过补丁的 codex-acp）。
+Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在 `session/new` 建立的原生会话第一次 `session/prompt` 时，
+把指令包在 `<coda-session-instructions>` 里作为单独的一段文本放在用户输入前面，之后与 `session/load` 恢复的会话不再送；
+第一条是斜杠命令时留到下一条。Codex 另声明插话：一轮已经结束时收到的 `_session/steering` 回 `promptRequired`，不另开一轮。
+
+Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
+CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
+Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 1.0.151（`opencode acp` 第一个报当前模型、恢复的会话能接着跑的版本：之前 `session/load` 不登记会话，下一轮报 Session not found）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
+Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作。
 
 ### Grok 审批模式
 
@@ -131,7 +146,8 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 
 - `name` 是插件 ID：小写字母、数字和 `-`，以字母开头，至多 40 个字符；不能与 Coda 内置插件同名（`claude`、`codex`、`grok`、`kimi`、`opencode`、`review` 等，完整列表见 `check/coda.mjs`）。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
-- `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`；读不懂的键一律报错，不会被悄悄忽略。
+- `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
+- `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与面板命令同样的规则），没有别的键。
 
 **从仓库安装的限制**：带 npm 依赖（`dependencies`、`optionalDependencies`）就要把 `package-lock.json` 一起提交，Coda 在插件的版本目录里
 `npm ci`（较早的 Coda 不收带 npm 依赖的插件）；不能有符号链接或子模块；整个目录不超过 10 MiB（`node_modules` 不算，也不该提交）；
@@ -158,6 +174,11 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（面�
 照 [接入协议](docs/agent-protocol.md) 实现，另外几条容易漏的：
 
 - 标准输出只写 JSON-RPC，一行一条；日志写标准错误（Coda 不读它）。请求 ID 是字符串。
+- 必须接受会话指令：`initialize` 结果声明 `agentCapabilities.sessionCapabilities.systemPrompt: {}`，`session/new`、`session/load` 收到的
+  `systemPrompt`（`append` 模式）在第一轮之前生效。没有原生系统提示词入口的，在原生会话第一次 `session/prompt` 时把指令作为单独、明确分隔的一段
+  放在用户输入前面送入，之后与 `session/load` 恢复的会话不再送。
+- 插话可选：在 `initialize` 结果顶层声明 `_meta.steering.supported: true`，就要处理 `_session/steering`：一轮进行中回 `injected`，
+  这一轮已经结束回 `promptRequired`（`reason: "noRunningTurn"`），且不自己另开一轮。
 - `session/new` 要报当前模型：`configOptions` 里 `category: "model"` 的那一项的 `currentValue`（或 `models.currentModelId`）。Coda 每轮开始前核对，没有就不发这一轮。
 - 没登录时在 `initialize`、`session/new` 或 `session/load` 回 -32000，Coda 提示用户去登录。
 - `session/cancel` 后 30 秒内结束这一轮（`stopReason: "cancelled"`），否则 Coda 关掉它的进程组。
@@ -196,8 +217,8 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 | 级 | 要不要登录 | 查什么 |
 | --- | --- | --- |
 | 清单（总是） | 不要 | `package.json` 读得懂、ID 合法且不与内置的撞（本仓库 `plugins/<id>` 里的内置插件除外）；每个 Agent 字段齐全、`command` 一行、图标是不超过 32 KiB 的 PDF；面板、组与命令的声明，Agent、组与命令不与内置插件的撞；从仓库安装的限制，带 npm 依赖要有对得上的 `package-lock.json` |
-| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境照 Coda 给插件进程的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`，依赖的插件在旁边目录里时给 `CODA_PLUGIN_DEPENDENCIES`），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1；`session/new` 给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板读一次，输出合格式 |
-| 一轮（`--live`） | 要 | 发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明 `loadSession` 的，新开进程 `session/load` 要成功 |
+| 握手（默认） | 不要 | `sh -c` 启动 `command`（环境照 Coda 给插件进程的：`CODA_NODE`、`CODA_PLUGIN_PATH`、临时的 `CODA_PLUGIN_STATE`、设置默认值的 `CODA_PLUGIN_SETTINGS`，依赖的插件在旁边目录里时给 `CODA_PLUGIN_DEPENDENCIES`），发与 Coda 相同的 `initialize`，要求 `protocolVersion` 为 1、声明会话指令（`sessionCapabilities.systemPrompt`，没声明算失败）；`session/new` 带会话指令，给出会话与当前模型，回 -32000 记为未登录、跳过后面的检查（不算失败）；像 Coda 一样对进程组发 SIGTERM，5 秒内要退出（超过 0.8 秒提醒）；另起一个进程，关掉标准输入后 5 秒内不退出只提醒。面板读一次，输出合格式 |
+| 一轮（`--live`） | 要 | 第一轮问会话指令里的检查词（一个随机词），回复里要有它；再发一轮提示词（默认「只回复 ok」）收到 `stopReason`；每条 `session/update` 过 ACP SDK 的 schema；`_coda/wait` 按 Coda 的 `validWait` 与协议的规则核对（子 Agent 不带 `childSessionId`、定时不带 `at` 只提醒）；审批与提问一律回拒绝，在一轮之外发来的算失败；再发一轮并 `session/cancel`，30 秒内要结束，读到取消后还在做事或拖过 5 秒才答复却不回 `cancelled` 算失败（见下）；有自主轮次的也取消一次；声明插话的，一轮结束后插话要回 `promptRequired` 且不自己另开一轮，一轮进行中插话要回 `injected` 或 `promptRequired`（`injected` 的那一轮照常回 `stopReason`）；声明 `loadSession` 的，新开进程 `session/load`（同样带会话指令）要成功，随后在新进程里再跑一轮也要收到 `stopReason` |
 
 **取消后的 `stopReason` 怎么判**：检查发 `session/cancel` 时紧跟一个只会得到 -32601 的探测请求（`_codaCheck/barrier`）。Agent 按顺序读，
 探测的答复一定写在它读到取消之后，所以本轮的答复与 `session/update` 落在探测答复的前后，就说明它们写出时读没读到取消。
@@ -205,7 +226,8 @@ npx github:coda-console/coda-plugins#<提交> <插件目录>
 答复先于读到取消写出（取消送到前这一轮已经结束），或读到取消时已经做完、随即答复的（如 Codex 做完后等标题时被取消），只记一条说明。
 
 `--manifest` 只查清单（什么也不运行）；`--agent <id>` 只查一个 Agent。退出码：0 通过，1 有失败，2 用法不对。
-面板的动作不运行（按钮可能改动东西）；Coda 自己的 MCP 服务器不给（`mcpServers` 为空）。
+面板的动作与插件的设置动作（`contributes.setup`）不运行（可能改动东西、装软件）；Coda 自己的 MCP 服务器不给（`mcpServers` 为空）。
+检查给的会话指令不是 Coda 的全文，是一段替身加一句检查词。
 
 在自己插件仓库的 CI 里：
 
@@ -244,7 +266,7 @@ CI 先装各插件的依赖再跑全部测试，`plugins/*` 只查清单：真�
 
 MIT，见 [LICENSE](LICENSE)。各插件的品牌图形归各自权利人所有，来源写在插件的 `icons/README.md`。
 
-`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs` 在加载时给锁定版本的
+`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs` 在加载时给锁定版本的
 [codex-acp](https://github.com/agentclientprotocol/codex-acp)（Apache-2.0，Copyright 2025 JetBrains s.r.o.）打补丁，补丁里含 codex-acp 构建产物的原文片段。
 这些片段按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 使用，许可全文也随 npm 包装在 `node_modules/@agentclientprotocol/codex-acp/LICENSE`；
 codex-acp 本身作为 npm 依赖安装，不在本仓库里。

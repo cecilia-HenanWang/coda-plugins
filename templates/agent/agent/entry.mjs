@@ -4,6 +4,9 @@
 // `_coda/wait`（见仓库里的 docs/agent-protocol.md）。这里全部手写，只用 Node 自带的模块：从仓库安装的插件没有 npm 依赖。
 //
 // - 每轮把提示词原样回显，几个字一段地流式发出，所以「停止」能落在一轮中间。
+// - 会话指令（systemPrompt）：Coda 要求声明。回声 Agent 没有原生的系统提示词，就照协议在这个会话第一次 session/prompt 时
+//   把指令作为单独分隔的一段放在用户输入前面；它没有模型，「送入」就是把这一段也回显出来。
+// - 插话（_session/steering）：一轮进行中收到的加进这一轮，说完提示词接着说；一轮已经结束就回 promptRequired，不自己另开一轮。
 // - 提示词以 wait 开头时登记一个后台任务（kind: task），两秒后在一轮之外报 handling：Coda 为它开一轮自主轮次，
 //   这时说的话归这一项；说完报 done，自主轮次结束。
 // - session/cancel：停止本轮；没有轮次在进行时，停止正在处理（handling）的等待项。
@@ -28,7 +31,8 @@ async function speak(sessionId, text, stopped) {
 
 // Coda 每轮开始前要知道会话用的是哪个模型：没有模型的 Agent 也报一个。
 const MODEL = { id: 'model', name: '模型', category: 'model', type: 'select', currentValue: 'echo', options: [{ value: 'echo', name: '回声' }] };
-// sessionId → { turn：进行中的一轮或 null，waits：waitId → { state, timer }，count：取 waitId 用 }
+// sessionId → { turn：进行中的一轮或 null，waits：waitId → { state, timer }，count：取 waitId 用，
+//   instructions：会话指令还没送入时是它的正文，送入后为 null }
 const sessions = new Map();
 const session = sessionId => {
   const found = sessions.get(sessionId);
@@ -59,11 +63,16 @@ async function handle(sessionId, waitId, text) {
 
 // ---- 请求 ----
 const methods = {
-  // 声明会登记等待项（_meta.coda.waits）；不支持恢复会话，Coda 就不会发 session/load。
-  initialize: () => ({ protocolVersion: 1, agentCapabilities: { loadSession: false, _meta: { coda: { waits: {} } } }, authMethods: [] }),
-  'session/new': () => {
+  // 声明会话指令（sessionCapabilities.systemPrompt）、会登记等待项（_meta.coda.waits）与插话（顶层 _meta.steering）；
+  // 不支持恢复会话，Coda 就不会发 session/load（支持的，恢复的会话已经送过指令，不再送）。
+  initialize: () => ({ protocolVersion: 1, agentCapabilities: { loadSession: false, sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {} } } },
+    authMethods: [], _meta: { steering: { supported: true } } }),
+  'session/new': ({ systemPrompt }) => {
+    // Coda 只用 append 模式、一个文本块；应用不了的指令回错误，不建立会话。
+    if (systemPrompt && systemPrompt.mode !== 'append') throw Object.assign(new Error(`不支持 systemPrompt 模式 ${systemPrompt.mode}`), { code: -32602 });
+    const instructions = (systemPrompt?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n').trim() || null;
     const sessionId = randomUUID();
-    sessions.set(sessionId, { turn: null, waits: new Map(), count: 0 });
+    sessions.set(sessionId, { turn: null, waits: new Map(), count: 0, instructions });
     return { sessionId, configOptions: [MODEL] };
   },
   'session/set_config_option': ({ sessionId, configId, value }) => {
@@ -72,13 +81,27 @@ const methods = {
     return { configOptions: [MODEL] };
   },
   'session/prompt': async ({ sessionId, prompt }) => {
-    const s = session(sessionId), turn = s.turn = { cancelled: false };
+    const s = session(sessionId), turn = s.turn = { cancelled: false, steers: [] };
     const text = (prompt ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n').trim();
     try {
       if (/^wait\b/i.test(text)) startWait(sessionId, text);
-      await speak(sessionId, `回声：${text}`, () => turn.cancelled);
+      // 第一轮：指令作为单独分隔的一段在用户输入前面，整段一次说出。
+      if (s.instructions) {
+        notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: `<coda-instructions>\n${s.instructions}\n</coda-instructions>\n\n` } } });
+        s.instructions = null;
+      }
+      let said = await speak(sessionId, `回声：${text}`, () => turn.cancelled);
+      while (said && turn.steers.length) said = await speak(sessionId, `\n插话：${turn.steers.shift()}`, () => turn.cancelled);
       return { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' };
     } finally { if (s.turn === turn) s.turn = null; }
+  },
+  // 插话：一轮进行中就加进这一轮，之后的回复与结束都属于原来那次 session/prompt；没有轮次在进行时不收，等 Coda 作为下一轮发来。
+  '_session/steering': ({ sessionId, prompt }) => {
+    const s = session(sessionId);
+    if (!s.turn || s.turn.cancelled) return { outcome: 'promptRequired', reason: 'noRunningTurn' };
+    s.turn.steers.push((prompt ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n').trim());
+    return { outcome: 'injected' };
   },
   // Coda 停一个声明了 stoppable 的等待项：回 {} 只表示收到，随后用 _coda/wait 报它结束。
   '_coda/wait/stop': ({ sessionId, waitId }) => {
