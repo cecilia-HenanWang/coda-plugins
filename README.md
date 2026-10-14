@@ -10,7 +10,7 @@ Agent 讲 [ACP](https://agentclientprotocol.com)，外加 Coda 的 Agent 活动�
 plugins/codex/           Codex：入口在同一进程里运行锁定版本的 codex-acp（npm 依赖），面板「Codex」
 plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（npm 依赖），面板「Claude」
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，面板「Kimi」
-plugins/grok/            Grok：只有清单，运行机上的 Grok CLI 自己讲 ACP，面板「Grok」
+plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，面板「Grok」
 plugins/opencode/        OpenCode：只有清单，运行机上的 opencode acp
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：只有清单，运行机上的 Cursor CLI 自己讲 ACP
@@ -42,6 +42,14 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
+
+### Grok 审批模式
+
+Grok 插件通过 ACP 提供「按运行机配置」「自动审批」「全部放行」。后两项使用 Grok 原生的
+`_meta.autoMode` / `yoloMode`；自动审批的判断、禁止规则与 hooks 都由 Grok 执行。
+Grok CLI 把这些参数绑定在连接上，因此插件在轮次之间切换模式时，用新进程加载同一个原生会话，保留模型与推理强度，
+过滤加载时重放的历史。新进程准备失败时保留原连接和模式；插件不修改运行机的 Grok 配置。
+该适配已核对 Grok CLI 1.0.52，升级 CLI 时需复核其会话参数与恢复行为。
 
 ### Codex 账号与额度
 
