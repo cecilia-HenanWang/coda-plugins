@@ -38,7 +38,7 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
-| `opencode` | 无 | 已登录的 OpenCode CLI 0.15.10 及以上（设置动作安装或升级） |
+| `opencode` | 无 | 已登录的 OpenCode CLI 0.15.17 及以上（设置动作安装或升级） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
@@ -55,7 +55,7 @@ Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在
 
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
-Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 0.15.10（第一个带 `opencode acp` 的版本）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
+Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 0.15.17（`opencode acp` 第一个在 `session/new`、`session/load` 报当前模型并能恢复会话的版本）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
 Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作。
 
 ### Grok 审批模式

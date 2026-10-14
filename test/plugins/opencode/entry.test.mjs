@@ -8,13 +8,15 @@ import { relaysInstructions } from '../relay.mjs';
 test('the entry relays opencode acp from ~/.opencode/bin and gives it the session instructions on the first prompt only', t =>
   relaysInstructions(t, 'opencode', '.opencode/bin/opencode', ['acp']));
 
-test('setup installs a missing or broken OpenCode, upgrades one without `opencode acp`, and keeps a newer one', () => {
+test('setup installs a missing or broken OpenCode, upgrades one older than Coda\'s contract needs, and keeps a newer one', () => {
   const run = (status, stdout = '') => () => ({ status, stdout, stderr: '' });
-  assert.equal(MINIMUM, '0.15.10');
+  assert.equal(MINIMUM, '0.15.17');
   assert.equal(needed(null).action, 'install');
   assert.equal(needed('/bin/opencode', run(1)).action, 'install');
-  assert.deepEqual(needed('/bin/opencode', run(0, '0.15.9\n')), { action: 'upgrade', reason: 'OpenCode CLI 0.15.9 低于所需的 0.15.10' });
+  // 0.15.10 has `opencode acp` but reports no model and loads no session.
+  assert.deepEqual(needed('/bin/opencode', run(0, '0.15.10\n')), { action: 'upgrade', reason: 'OpenCode CLI 0.15.10 低于所需的 0.15.17' });
+  assert.deepEqual(needed('/bin/opencode', run(0, '0.15.16\n')), { action: 'upgrade', reason: 'OpenCode CLI 0.15.16 低于所需的 0.15.17' });
   assert.equal(needed('/bin/opencode', run(0, 'dev\n')).action, 'upgrade');
-  assert.deepEqual(needed('/bin/opencode', run(0, '0.15.10\n')), { action: 'none', version: '0.15.10' });
+  assert.deepEqual(needed('/bin/opencode', run(0, '0.15.17\n')), { action: 'none', version: '0.15.17' });
   assert.deepEqual(needed('/bin/opencode', run(0, '1.19.0\n')), { action: 'none', version: '1.19.0' });
 });

@@ -1,6 +1,5 @@
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent. Without an OpenCode CLI that runs, or with one older than MINIMUM (the first
-// release with `opencode acp`, v0.15.10), OpenCode's own installer (https://opencode.ai/install) puts the latest in
+// ends well once the machine can run the agent. Without an OpenCode CLI that runs, or with one older than MINIMUM, OpenCode's own installer (https://opencode.ai/install) puts the latest in
 // ~/.opencode/bin, where the agent looks first, leaving the shell's configuration alone; a newer one is kept. Why the
 // machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
@@ -8,7 +7,10 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { opencodeBinary } from '../agent/binary.mjs';
 
-export const MINIMUM = '0.15.10';
+// The first release whose `opencode acp` keeps Coda's contract: it reports the current model on `session/new` and
+// `session/load` and can load a session (`loadSession: true`). `opencode acp` came in 0.15.10, but until 0.15.13 it reports
+// no model, so Coda refuses every turn, and until 0.15.16 it cannot load a session, so one cannot go on in a new process.
+export const MINIMUM = '0.15.17';
 // The first x.y.z a version command prints; whether one is older than another.
 export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
 export function older(version, than) {
