@@ -14,7 +14,8 @@ export function sessionInstructions(systemPrompt) {
 }
 
 // The part in front of the user's input: delimited, and said to be the client's, not the user's.
-export const instructionsBlock = text => ({ type: 'text', text: '<coda-session-instructions>\n'
+const OPENING = '<coda-session-instructions>';
+export const instructionsBlock = text => ({ type: 'text', text: `${OPENING}\n`
   + 'Instructions from Coda, the client this session runs in, for the whole session. They are not part of the user\'s message.\n\n'
   + `${text}\n</coda-session-instructions>\n` });
 
@@ -43,8 +44,14 @@ export class SessionInstructions {
     }
     return { agent: message };
   }
-  // What the agent says, as said to Coda.
+  // What the agent says, as said to Coda. A title the agent took from the first prompt's text begins with the instructions,
+  // not with what the user asked: it is left out, and the session keeps the title Coda gives it.
   fromAgent(message) {
+    const update = message?.method === 'session/update' && record(message.params) ? message.params.update : null;
+    if (record(update) && update.sessionUpdate === 'session_info_update' && typeof update.title === 'string' && update.title.trimStart().startsWith(OPENING)) {
+      const { title, ...rest } = update;
+      return { ...message, params: { ...message.params, update: rest } };
+    }
     if (!record(message) || !('id' in message) || 'method' in message) return message;
     const asked = this.asked.get(message.id);
     if (!asked) return message;
