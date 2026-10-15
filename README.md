@@ -106,6 +106,8 @@ Coda 内置副本同步时也一起带上这两个目录。
 原 Codex 登录入口的委托，并自行提供额度面板。Codex 把自己的依赖目录通过 `CODA_PLUGIN_DEPENDENCIES.codex`
 交给来源，来源与面板使用同一份 Codex CLI。
 
+### Agent 的错误
+
 Codex 插件在 ACP 出口把 codex-acp 错误 `data.message`、`data.details` 或字符串 `data` 中的原因补进标准 `error.message`，
 详情裁掉两端空白并去重，错误码、请求 ID 与原始 `data` 保留。Coda 和其他 ACP 客户端直接显示 `message` 即可；
 这层适配由插件维护，客户端无需理解 codex-acp 的内部错误格式。
@@ -116,6 +118,13 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 `Internal error` 时按临时故障报告 `input: "not_accepted"`；这表示允许有限重试，不表示已确定历史故障根因。
 明确的额度耗尽、认证、上下文限制、参数、配置或沙箱错误不带此标记。
 插件不做退避或重新发送；Coda 按通用协议统一退避，客户端只支持 ACP 时仍能读到完整错误。
+
+Kimi 2.1.1 会把五小时额度耗尽（`403 You've reached your 5-hour usage limit.`）误报为 ACP `auth_required`。
+Kimi 插件在 `session/prompt` 的回执中将这条已知错误改为普通执行错误（-32603），在标准 `error.message` 中保留服务端完整原因，
+同时按[执行失败协议](docs/agent-protocol.md#执行失败)报告 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`。
+Coda 按这个通用类别显示「额度不足」，不触发服务故障重试；其他 ACP 客户端仍能读取完整原因。
+插件不推算额度重置时间；其他认证失败、403、短时限流与普通错误原样保留。
+`CODA_DISABLE_RUNTIME_PATCHES=kimi` 关闭这层适配。
 
 ### 升级 Agent 的 CLI 与 SDK
 

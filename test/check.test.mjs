@@ -315,3 +315,10 @@ test('the checker follows Coda service retry policy and stops at the shared budg
   assert.equal(always.items.filter(x => x.rule === 'live.service-retry').length, 3);
   assert.deepEqual(failed(always), ['live.turn']);
 });
+
+test('the checker recognizes quota exhaustion, preserves its cause and never retries it', async () => {
+  const { report } = await checkPlugin(plugin({ mode: 'quota-exhausted' }), { live: true, limits: { ...limits, retryDelays: [5, 10, 20] } });
+  assert.deepEqual(failed(report), ['live.turn']);
+  assert.match(report.failures[0].message, /额度不足\n\nProvider usage allowance exhausted/);
+  assert.equal(report.items.filter(x => x.rule === 'live.service-retry').length, 0);
+});

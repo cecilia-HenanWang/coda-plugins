@@ -65,6 +65,9 @@ const methods = {
 };
 // A turn, as each mode gets it wrong.
 async function act(sessionId, me, first) {
+  if (mode === 'quota-exhausted')
+    throw Object.assign(new Error('Provider usage allowance exhausted'), { code: -32603,
+      data: { _meta: { coda: { failure: { kind: 'quota_exhausted', input: 'accepted' } } } } });
   if (mode === 'service-failure-always' || (mode === 'service-failure-once' && first))
     throw Object.assign(new Error('Service unavailable'), { code: -32603,
       data: { _meta: { coda: { failure: { kind: 'service_unavailable', input: 'accepted' } } } } });

@@ -5,7 +5,7 @@
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
 // The Coda commit these rules were copied from (an empty current mode is none chosen).
-export const CODA_COMMIT = 'f37bf45bb6aee58df0855498f90fa5f8884eafdc';
+export const CODA_COMMIT = '9284fd572a38293df6e46199b8c8bf1892d00213';
 // The ACP version Coda speaks: the SDK's (backend/package.json pins @agentclientprotocol/sdk 1.4.0, as package.json here).
 export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
@@ -27,10 +27,23 @@ export const STEERING = '_session/steering';
 export const supportsSteering = init => init?._meta?.steering?.supported === true;
 export const steeringParams = (sessionId, text) => ({ sessionId, prompt: [{ type: 'text', text }], _meta: { steering: { idleBehavior: 'promptRequired' } } });
 export const STEERING_OUTCOMES = ['injected', 'promptRequired'];
-// Service failures and the retry policy (backend/src/application/prompt-recovery.mjs).
-export function serviceFailure(error) {
+// Failure categories and presentation (backend/src/domain/agent-failures.mjs).
+export function agentFailure(error) {
   const failure = error?.data?._meta?.coda?.failure;
-  return failure?.kind === 'service_unavailable' && ['accepted', 'not_accepted'].includes(failure.input) ? failure : null;
+  if (!record(failure)) return null;
+  return failure.kind === 'quota_exhausted' ||
+    (failure.kind === 'service_unavailable' && ['accepted', 'not_accepted'].includes(failure.input)) ? failure : null;
+}
+export function agentErrorMessage(error) {
+  const message = typeof error?.message === 'string' && error.message ? error.message : 'Agent 返回错误';
+  const detail = typeof error?.data?.message === 'string' ? error.data.message.trim() : '';
+  const text = detail && !message.includes(detail) ? `${message}\n\n${detail}` : message;
+  return agentFailure(error)?.kind === 'quota_exhausted' && !text.startsWith('额度不足') ? `额度不足\n\n${text}` : text;
+}
+// Service retry policy (backend/src/application/prompt-recovery.mjs).
+export function serviceFailure(error) {
+  const failure = agentFailure(error);
+  return failure?.kind === 'service_unavailable' ? failure : null;
 }
 // The former capacity/model-unavailable policy, shared by every agent that reports a service failure.
 export const RETRY_DELAYS = [15_000, 30_000, 60_000];

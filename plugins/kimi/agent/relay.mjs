@@ -4,8 +4,10 @@
 // that what that turn took up is not left as if Kimi still had it to handle. A message Kimi sends outside a prompt while
 // nothing is handled may begin a turn of its own: it waits for a look too, so that what Kimi handles there is told first.
 // Nothing waits on a look longer than `hold`. CODA_DISABLE_RUNTIME_PATCHES=kimi leaves a plain relay, but for Coda's session
-// instructions, which go in front of a new session's first prompt either way (instructions.mjs).
+// instructions, which go in front of a new session's first prompt either way (instructions.mjs). A known quota error in
+// a prompt's answer is classified at this boundary (errors.mjs), without retrying or changing other errors.
 import { SessionInstructions } from './instructions.mjs';
+import { classifyKimiError } from './errors.mjs';
 import { SUPPORTED, kimiSession } from './observe.mjs';
 import { KimiWaits } from './waits.mjs';
 
@@ -48,7 +50,7 @@ export class KimiRelay {
         message = { ...message, result: { ...message.result, agentCapabilities: { ...capabilities, _meta: { ...meta, coda: { waits: {} } } } } };
       }
     }
-    if (asked?.prompt) this.prompts.delete(message.id);
+    if (asked?.prompt) { this.prompts.delete(message.id); message = classifyKimiError(message); }
     const waiting = asked?.prompt || (!answer && !this.prompts.size && this.waits && !this.waits.handling && Date.now() >= this.lookedAt + this.every);
     this.queue = this.queue.then(async () => {
       if (waiting) await this.look({ fresh: !!asked?.prompt });
