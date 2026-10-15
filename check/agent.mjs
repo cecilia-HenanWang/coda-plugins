@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ACP_PROTOCOL_VERSION, CANCEL_LIMIT, METHOD_NOT_FOUND, OPEN_LIMIT, SIGNED_OUT, STEERING, STEERING_OUTCOMES, TERM_GRACE, RETRY_DELAYS, continuationPrompt,
-  serviceFailure, cleared, clientCapabilities, currentModel, pluginEnv, steeringParams, supportsSteering, systemPrompt, takesInstructions } from './coda.mjs';
+  agentErrorMessage, serviceFailure, cleared, clientCapabilities, currentModel, pluginEnv, steeringParams, supportsSteering, systemPrompt, takesInstructions } from './coda.mjs';
 import { temporary } from './leftovers.mjs';
 import { AgentProcess, Exited, Timeout } from './process.mjs';
 import { explain, schemas } from './schema.mjs';
@@ -240,7 +240,7 @@ class Session {
         accepted ||= failure.input === 'accepted';
         return this.prompt(accepted ? continuationPrompt : text, { as, attempt: attempt + 1, accepted });
       }
-      say.fail(rule, `session/prompt 回了错误 ${m.error.code}：${m.error.message}（Coda 把这一轮记为失败）`);
+      say.fail(rule, `session/prompt 回了错误 ${m.error.code}：${agentErrorMessage(m.error)}（Coda 把这一轮记为失败）`);
       return null;
     }
     const parsed = schemas.zPromptResponse.safeParse(m.result);

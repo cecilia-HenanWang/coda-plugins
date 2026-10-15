@@ -11,6 +11,6 @@ export function classifyKimiError(message) {
   const meta = record(data._meta) ? data._meta : {};
   const coda = record(meta.coda) ? meta.coda : {};
   return { ...message, error: { ...error, code: -32603,
-    message: `额度不足：Kimi 五小时用量已达上限，请等待当前窗口结束后重试。\n\n${reason}`,
+    message: reason,
     data: { ...data, _meta: { ...meta, coda: { ...coda, failure: { kind: 'quota_exhausted' } } } } } };
 }

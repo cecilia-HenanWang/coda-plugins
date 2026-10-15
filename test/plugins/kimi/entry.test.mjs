@@ -146,8 +146,7 @@ for (const plain of [false, true]) test(`the relay ${plain ? 'passes through' : 
   else {
     assert.equal(said.at(-1).id, 2);
     assert.equal(said.at(-1).error.code, -32603);
-    assert.match(said.at(-1).error.message, /^额度不足：/);
-    assert.ok(said.at(-1).error.message.endsWith(reason));
+    assert.equal(said.at(-1).error.message, reason);
     assert.deepEqual(said.at(-1).error.data._meta.coda.failure, { kind: 'quota_exhausted' });
   }
   assert.equal(told.filter(message => message.method === 'session/prompt').length, 1);

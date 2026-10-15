@@ -9,7 +9,7 @@ test('the known five-hour quota response is an execution failure with the full p
     data: { diagnostic: { statusCode: 403 }, _meta: { trace: 'kept', coda: { extra: true } } } } };
   const before = structuredClone(reply), classified = classifyKimiError(reply);
   assert.deepEqual(classified, { ...reply, error: { ...reply.error, code: -32603,
-    message: `额度不足：Kimi 五小时用量已达上限，请等待当前窗口结束后重试。\n\n${reason}`,
+    message: reason,
     data: { diagnostic: { statusCode: 403 }, _meta: { trace: 'kept', coda: { extra: true, failure: { kind: 'quota_exhausted' } } } } } });
   assert.deepEqual(reply, before);
   assert.equal(classifyKimiError(classified), classified);

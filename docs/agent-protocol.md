@@ -1,16 +1,16 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: f37bf45bb6aee58df0855498f90fa5f8884eafdc
+  coda-commit: 9284fd572a38293df6e46199b8c8bf1892d00213
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 59d87547a9763601ced577e296b97f2adec451fe2ad16873a69a873d95561180
+  body-sha256: 9c51fd6e6fdc2e12aa52ce0c96b892c82d3dc416b5b4ef3a250fff46436a1023
 -->
 # Agent 接入协议
 
 > 这是 Coda 接入协议正文的公开副本（Coda 主仓库不公开），同步自它的 docs/agent-protocol.md。指向 Coda 其他文档的链接在副本里只留文字。
 
 Coda 用 [ACP](https://agentclientprotocol.com)（Agent Client Protocol）接 Agent，要求 Agent 接受[会话指令](#会话指令)（ACP 的 `systemPrompt`），
-可选支持[插话](#插话)（`_session/steering`），另收 Agent 活动报告（`_coda/wait`）和服务故障事实（ACP 错误数据里的 `_meta.coda.failure`）。本文是这份协议的唯一正文，写给要让一个 Agent（比如 Cursor 的）接入 Coda 的人：照它实现，
+可选支持[插话](#插话)（`_session/steering`），另收 Agent 活动报告（`_coda/wait`）和[执行失败事实](#执行失败)（ACP 错误数据里的 `_meta.coda.failure`）。本文是这份协议的唯一正文，写给要让一个 Agent（比如 Cursor 的）接入 Coda 的人：照它实现，
 Coda 就知道这个 Agent 在一轮之外还在做什么，如实显示、不回收它的进程，把它处理这些东西时的输出、审批和提问放进正确的一轮，
 并把它之后说的作为补交交回正确的调用。产品上这些规则的来由见会话行为契约与完成唤醒契约。
 
@@ -95,7 +95,26 @@ Coda 的 MCP 服务器只提供工具，不带 `instructions`。
 {"jsonrpc":"2.0","id":"steer-1","result":{"outcome":"injected"}}
 ```
 
-## 服务暂不可用
+## 执行失败
+
+插件负责将上游错误归为通用类别，Coda 负责显示与重试策略；Coda 不依赖 Agent 名字、错误文字或私有上游错误码。
+`session/prompt` 的 JSON-RPC 错误通过 `error.data._meta.coda.failure` 报告类别。标准 `error.message` 保留可读的失败原因；
+其他 ACP 客户端可以忽略扩展。未标记、未知或不合格式的类别按普通错误处理，不自动重试。
+
+### 额度不足
+
+`kind: quota_exhausted` 表示可用额度已耗尽，例如订阅用量窗口已满或余额不足。插件须有明确的上游原因，不能仅凭 HTTP 403、
+HTTP 429 或上游的认证错误分类判断。真正的认证失败仍沿用 ACP `auth_required`，不得报为额度不足。
+
+```json
+{"jsonrpc":"2.0","id":"prompt-1","error":{"code":-32603,"message":"当前用量窗口的额度已耗尽","data":{"_meta":{"coda":{"failure":{"kind":"quota_exhausted"}}}}}}
+```
+
+Coda 按该类别显示「额度不足」，保留完整原因，不安排自动重试；这个类别不要求 `input`，即使带了也不进入服务故障重试。
+插件以普通执行错误返回（例如 -32603），不得把额度耗尽伪装成要求重新登录的 -32000。
+恢复条件（等待窗口重置、补充额度等）由插件放在原因中；上游没有给出确切恢复时间时，不推算时间。
+
+### 服务暂不可用
 
 插件负责识别服务端临时故障；**重试策略归 Coda**，不依赖 Agent 名字、错误文字或私有上游错误码。
 `session/prompt` 的 JSON-RPC 错误可以在 `error.data._meta.coda.failure` 中报告：
