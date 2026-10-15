@@ -5,7 +5,7 @@
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
 // The Coda commit these rules were copied from (an empty current mode is none chosen).
-export const CODA_COMMIT = '8e979c5619728f43d3c9eeb2332e7adb89f5edf9';
+export const CODA_COMMIT = 'f37bf45bb6aee58df0855498f90fa5f8884eafdc';
 // The ACP version Coda speaks: the SDK's (backend/package.json pins @agentclientprotocol/sdk 1.4.0, as package.json here).
 export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 

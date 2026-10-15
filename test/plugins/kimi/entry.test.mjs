@@ -1,7 +1,7 @@
 // From Coda's backend/test/kimi-entry.test.mjs at ef1d2311, as plain node:test. Its case through the entry and Coda's
 // backend stays in Coda.
-// The Kimi entry (plugins/kimi/agent/): what Kimi's own files say of its tasks is told to Coda as waits, and a task Kimi is told
-// of when it ends is handled until its main agent ends a turn after it, which Coda then holds as a turn of the session's own.
+// The Kimi entry (plugins/kimi/agent/): what Kimi's own files say of its tasks is told to Coda as waits. A task ending during
+// Coda's prompt ends there; one ending outside a prompt is handled until the main agent ends a later turn of its own.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
@@ -147,6 +147,18 @@ test('the relay says it reports waits, and before Kimi\'s answer to a prompt is 
   await r.drained();
   assert.deepEqual(said.slice(-2).map(m => m.method ?? m.result.stopReason), ['_coda/wait', 'end_turn']);
   assert.equal(said.at(-2).params.state, 'done');
+});
+
+test('a subagent ending during a Coda prompt is done while the parent keeps working', async t => {
+  const child = { taskId: 'child', kind: 'agent', agentId: 'agent-1', status: 'running', startedAt: 1 };
+  let facts = { tasks: [child], turnEndedAt: 2 };
+  const { r, said, ready } = relay({ facts: () => facts });
+  t.after(() => r.close());
+  await ready();
+  r.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: SESSION, prompt: [] } });
+  facts = { tasks: [{ ...child, status: 'completed', endedAt: 3 }], turnEndedAt: 2 };
+  await r.look({ fresh: true });
+  assert.deepEqual(said.filter(m => m.method === '_coda/wait').map(m => m.params.state), ['waiting', 'done']);
 });
 
 test('outside a prompt, with nothing handled, what Kimi says waits for a look: what it handles is told first', async t => {

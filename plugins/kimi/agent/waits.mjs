@@ -1,8 +1,8 @@
 // Kimi's tasks, as its files show them (observe.mjs), told to Coda as waits of its own (docs/agent-protocol.md「_coda/wait」):
-// a command as a task, a subagent's run as a subagent whose session is its agent id. A task Kimi will be told of when it ends
-// is handled from its end until the main agent ends a turn after it, which is the turn Kimi works on it in; one it is not
-// told of ends as it ends. Only tasks started since this agent process started (`startedAt`) are followed: an earlier
-// process's are not told again. Coda cannot stop any of them.
+// a command as a task, a subagent's run as a subagent whose session is its agent id. A task ending during Coda's prompt
+// ends there: the main agent is already handling it in that turn. One ending outside a prompt is handled until the main
+// agent ends a turn after it; one it is not told of ends as it ends. Only tasks started since this agent process started
+// (`startedAt`) are followed: an earlier process's are not told again. Coda cannot stop any of them.
 const FINAL = { completed: 'done', failed: 'failed', killed: 'cancelled', lost: 'failed', timed_out: 'failed' };
 const open = state => state === 'waiting' || state === 'handling';
 
@@ -14,7 +14,7 @@ export class KimiWaits {
   // it, and its end. A subagent's later run is told once those before it have ended, so that it continues their card; what
   // it said meanwhile is kept until then, all of it: what was read is not read again, and it is no more than the run's wire
   // holds (subagents.mjs reads at most 32 MiB of it).
-  read({ tasks, turnEndedAt }, content = []) {
+  read({ tasks, turnEndedAt }, content = [], { promptActive = false } = {}) {
     const runs = new Map(), going = new Set(), later = new Set();
     for (const task of tasks.filter(task => Number.isSafeInteger(task.startedAt) && task.startedAt >= this.startedAt).sort((a, b) => a.startedAt - b.startedAt)) {
       const run = { told: [], content: [], ended: [] }, subagent = task.kind === 'agent' && typeof task.agentId === 'string';
@@ -23,7 +23,8 @@ export class KimiWaits {
       if (before !== undefined && !open(before)) continue;
       if (before === undefined && subagent && going.has(task.agentId)) { later.add(task.taskId); continue; }
       const state = task.status === 'running' ? 'waiting'
-        : task.terminalNotificationSuppressed === true || turnEndedAt >= (task.endedAt ?? 0) ? FINAL[task.status] ?? 'failed' : 'handling';
+        : task.terminalNotificationSuppressed === true || promptActive || turnEndedAt >= (task.endedAt ?? 0)
+          ? FINAL[task.status] ?? 'failed' : 'handling';
       if (subagent && open(state)) going.add(task.agentId);
       if (state === before) continue;
       this.said.set(task.taskId, state);
