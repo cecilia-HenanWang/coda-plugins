@@ -133,6 +133,40 @@ function relay({ env = {}, facts = () => null } = {}) {
 }
 const running = { tasks: [{ taskId: 'job', kind: 'process', status: 'running', startedAt: 1 }], turnEndedAt: 2 };
 
+for (const plain of [false, true]) test(`the relay ${plain ? 'passes through' : 'classifies'} a five-hour quota failure without retrying`, async t => {
+  const { r, said, told, ready } = relay({ env: plain ? { CODA_DISABLE_RUNTIME_PATCHES: 'kimi' } : {} });
+  t.after(() => r.close());
+  await ready();
+  const reason = "403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
+  const reply = { jsonrpc: '2.0', id: 2, error: { code: -32000, message: `Authentication required: ${reason}` } };
+  r.fromCoda({ jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: SESSION, prompt: [{ type: 'text', text: '继续' }] } });
+  r.fromAgent(reply);
+  await r.drained();
+  if (plain) assert.equal(said.at(-1), reply);
+  else {
+    assert.equal(said.at(-1).id, 2);
+    assert.equal(said.at(-1).error.code, -32603);
+    assert.match(said.at(-1).error.message, /^额度不足：/);
+    assert.ok(said.at(-1).error.message.endsWith(reason));
+    assert.deepEqual(said.at(-1).error.data._meta.coda.failure, { kind: 'quota_exhausted' });
+  }
+  assert.equal(told.filter(message => message.method === 'session/prompt').length, 1);
+});
+
+test('quota adaptation leaves session creation errors and content notifications unchanged', async t => {
+  const { r, said } = relay();
+  t.after(() => r.close());
+  const reason = "Authentication required: 403 You've reached your 5-hour usage limit.";
+  r.fromCoda({ jsonrpc: '2.0', id: 'new', method: 'session/new', params: { cwd: '/work', mcpServers: [] } });
+  const reply = { jsonrpc: '2.0', id: 'new', error: { code: -32000, message: reason } };
+  const notification = { jsonrpc: '2.0', method: 'session/update', params: { sessionId: SESSION,
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reason } } } };
+  r.fromAgent(reply); r.fromAgent(notification);
+  await r.drained();
+  assert.equal(said[0], reply);
+  assert.equal(said[1], notification);
+});
+
 test('the relay says it reports waits, and before Kimi\'s answer to a prompt is passed on, what that turn took up is told', async t => {
   let facts = running;
   const { r, said, told, ready } = relay({ facts: () => facts });
