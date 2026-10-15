@@ -108,7 +108,8 @@ export class ClaudeSession {
       const servers = Object.fromEntries(mcpServers.filter(server => typeof server.command === 'string').map(({ name, command, args = [], env = [] }) =>
         [name, { command, args, ...(env.length ? { env: Object.fromEntries(env.map(variable => [variable.name, variable.value])) } : {}) }]));
       this.query = this.sdk.query({ prompt: this.input, options: {
-        permissionMode: 'default', settingSources: ['user', 'project', 'local'],
+        // Skipping every approval is a mode the user may switch to later; the SDK refuses it unless allowed at start.
+        permissionMode: 'default', allowDangerouslySkipPermissions: true, settingSources: ['user', 'project', 'local'],
         // Coda's session instructions (what its clients render, what the project's plugins say) follow Claude Code's own.
         systemPrompt: { type: 'preset', preset: 'claude_code', ...(instructions ? { append: instructions } : {}) },
         // Sessions reach each other through Coda's send, which the user approves and both threads show. A native peer

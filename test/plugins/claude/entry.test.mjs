@@ -68,6 +68,8 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   assert.deepEqual([option('effort').category, option('effort').currentValue, option('effort').options.map(o => o.value)], ['thought_level', 'default', ['default', 'low', 'high']]);
   assert.deepEqual(option('effort').options[0]._meta, { coda: { default: true } });
   assert.deepEqual([option('mode').category, option('mode').currentValue], ['mode', 'default']);
+  assert.equal(c.query.options.permissionMode, 'default');
+  assert.equal(c.query.options.allowDangerouslySkipPermissions, true);
   assert.deepEqual(c.query.options.mcpServers, { coda: { command: 'node', args: ['shim.mjs'] } });
   assert.equal(c.query.options.sessionId, c.sessionId);
   assert.deepEqual(c.query.options.systemPrompt, { type: 'preset', preset: 'claude_code' });
@@ -84,7 +86,11 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   await set('effort', 'high');
   await set('mode', 'plan'); assert.equal(c.query.mode, 'plan');
   assert.equal((await set('model', 'fixture-alias')).error.code, -32602, 'an alias is not a model');
-  assert.equal((await set('mode', 'bypassPermissions')).error.code, -32602);
+  const full = (await set('mode', 'bypassPermissions')).result.configOptions;
+  assert.equal(c.query.mode, 'bypassPermissions');
+  assert.equal(full.find(o => o.id === 'mode').currentValue, 'bypassPermissions');
+  await set('mode', 'default'); assert.equal(c.query.mode, 'default');
+  assert.equal((await set('mode', 'unknown')).error.code, -32602);
   // The init of a turn says what runs: the variant chosen is kept for the model it is of.
   await c.prompt('hello');
   assert.equal(c.updates().findLast(u => u.sessionUpdate === 'config_option_update').configOptions.find(o => o.id === 'model').currentValue, 'fixture-model-v1[1m]');

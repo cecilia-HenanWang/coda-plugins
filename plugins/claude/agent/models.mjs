@@ -2,8 +2,8 @@
 // SDK lists is its resolved wire ID with the context variant it selects (`[1m]`), or its own value when it resolves to
 // none, and rows that come to the same ID are one model. What the row is called is kept, the ID beside it when the name
 // does not say it.
-export const MODES = [['default', '人工审批'], ['acceptEdits', '自动接受编辑'], ['plan', '规划'], ['dontAsk', '未预先允许则拒绝'], ['auto', '自动审批']]
-  .map(([id, name]) => ({ id, name }));
+export const MODES = [['default', '人工审批'], ['acceptEdits', '自动接受编辑'], ['plan', '规划'], ['dontAsk', '未预先允许则拒绝'], ['auto', '自动审批'],
+  ['bypassPermissions', '跳过所有审批']].map(([id, name]) => ({ id, name }));
 
 export function claudeModels(rows = []) {
   const models = new Map();

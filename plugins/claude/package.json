@@ -19,7 +19,8 @@
         "modes": {
           "title": "审批模式",
           "unset": "人工审批",
-          "auto": "auto"
+          "auto": "auto",
+          "full": "bypassPermissions"
         },
         "skillsDir": ".claude/skills",
         "configFiles": [
