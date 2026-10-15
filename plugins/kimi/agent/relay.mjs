@@ -73,12 +73,12 @@ export class KimiRelay {
   // The look going, or a new one. What it finds is told as soon as it is found.
   observe() {
     if (this.looking || this.closed || !this.session) return this.looking;
-    const session = this.session, waits = this.waits;
+    const session = this.session, waits = this.waits, promptActive = this.prompts.size > 0;
     this.lookedAt = Date.now();
     this.looking = session.observe({ signal: new AbortController().signal, emit: (update, sessionId, taskId) => this.content.push({ update, sessionId, taskId }) })
       .then(facts => {
         if (this.closed || session !== this.session) return;
-        for (const message of facts ? waits.read(facts, this.content.splice(0)) : waits.lost()) this.say(message);
+        for (const message of facts ? waits.read(facts, this.content.splice(0), { promptActive }) : waits.lost()) this.say(message);
         if (facts) this.follow();
       }, () => {})
       .finally(() => {

@@ -1,9 +1,9 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: 8e979c5619728f43d3c9eeb2332e7adb89f5edf9
+  coda-commit: f37bf45bb6aee58df0855498f90fa5f8884eafdc
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 1ce8b14a03ba51a7a2ffa80b14833faf2365727cdf46e8d4ea7bd6c13a0e12a7
+  body-sha256: 59d87547a9763601ced577e296b97f2adec451fe2ad16873a69a873d95561180
 -->
 # Agent 接入协议
 
@@ -223,7 +223,7 @@ coda-console/coda-plugins 的 `plugins/<插件>/`、`test/plugins/<插件>/`，C
 | --- | --- | --- |
 | Codex（插件 `codex`） | `agent/entry.mjs`：在同一进程里运行锁定版本的 codex-acp，加载 Coda 的源码补丁（适配器一变就启动失败） | 向 codex-acp 声明 JetBrains AIR 的 `nativeSubagentSessions` 与 `asyncTasks`，把 AIR 报的子 Agent 与转入后台的命令翻成 `_coda/wait`：命令带 `toolCallId`，codex-acp 说能停的经 AIR 的停止（发给根会话）停；子 Agent 在 codex-acp 说能取消时经取消它的会话停。codex-acp 把继续的子 Agent 叫 `X:generation:N`，对 Coda 一律是 `X`，每次运行一个新的 `waitId`。会话默认以只读模式开始（`INITIAL_AGENT_MODE`，运行机设了就用它的）；Coda 选的账号经账号桥接上。Codex 没有自主轮次，不报 `handling`。会话指令经 codex-acp 的 `thread/start`、`thread/resume` 作为 `developerInstructions` 交给 Codex，接在运行机配置自己的 `developer_instructions` 后面；声明插话，一轮已经结束时收到的插话回 `promptRequired`（Coda 的补丁，codex-acp 原本会自己另开一轮） |
 | Claude（插件 `claude`，Agent `claude-sdk`） | `agent/entry.mjs`：Coda 基于 Claude Agent SDK 写的 ACP Agent，一个进程一个 SDK 会话；SDK 是插件依赖的 `@anthropic-ai/claude-agent-sdk` | 会话 ID 由入口生成；模型一律是具体 ID（SDK 列出的 `resolvedModel` 加上下文变体，不接受别名）。后台任务、子 Agent 与 Stop hook 列出的定时唤醒报成 `_coda/wait`（定时的计划不是五段 cron、算不出下次时间时不带 `at`）：子 Agent 的会话是启动它的工具调用 ID，SendMessage 续聊是同一会话的新一次运行；子 Agent 起的后台任务与子 Agent 在它自己的会话里报；没有轮次时结束的任务，等一轮接手或会话空闲才了结。Claude 自己开始的一轮，按开场消息指名的、已结束的任务、唯一到点的定时、自造的「Claude 自主继续」依次认定在处理什么，在任何输出与请求之前报 `handling`。审批的选项是仅允许本次、每条建议规则一个 `allow_always`、拒绝；SDK 不再等回答时发 `$/cancel_request`。MCP 服务器的表单原样转来，链接用 `mode: url`。额度写进插件状态目录的 `limits.json`（内置插件：Claude），标题经 `session_info_update` 报。会话指令追加在 `claude_code` 预设的系统提示词后面 |
-| Kimi（插件 `kimi`） | `agent/entry.mjs`：把 `kimi acp` 作为子进程，在两者之间逐条转发 | 读 Kimi 的会话文件，把入口启动之后开始的后台命令与子 Agent 报成 `_coda/wait`（子 Agent 的会话是它的 agentId，过程报成那个会话的 `session/update`；按运行先后交付登记、过程与了结，同一子 Agent 的下一次运行等上一次了结才报，从而接着用同一张卡片）；结果要交给主 Agent 的从结束起报 `handling`，主 Agent 在那之后结束一轮时了结。不能停，不带 `toolCallId`。只认 Kimi CLI 2.1.1 的文件布局，见会话行为契约。会话指令放在原生会话第一轮的输入前面 |
+| Kimi（插件 `kimi`） | `agent/entry.mjs`：把 `kimi acp` 作为子进程，在两者之间逐条转发 | 读 Kimi 的会话文件，把入口启动之后开始的后台命令与子 Agent 报成 `_coda/wait`（子 Agent 的会话是它的 agentId，过程报成那个会话的 `session/update`；按运行先后交付登记、过程与了结，同一子 Agent 的下一次运行等上一次了结才报，从而接着用同一张卡片）；在 Coda 发起的一轮里结束的任务直接了结，因为主 Agent 已在该轮处理结果；轮外结束且结果要交给主 Agent 的才从结束起报 `handling`，主 Agent 在那之后结束一轮时了结。不能停，不带 `toolCallId`。只认 Kimi CLI 2.1.1 的文件布局，见会话行为契约。会话指令放在原生会话第一轮的输入前面 |
 | Grok、OpenCode（插件 `grok`、`opencode`） | `agent/entry.mjs`：把运行机上的 `grok agent --no-leader stdio`（先找 `~/.grok/bin/grok`）、`opencode acp` 作为子进程逐条转发 | 只做会话指令：声明它，并放在原生会话第一轮的输入前面；不报告活动 |
 
 Claude 的提问（AskUserQuestion）是这样一张表单：第 i 个问题是必填字段 `q{i}`，`title` 是问题、`description` 是它的标题；单选为
