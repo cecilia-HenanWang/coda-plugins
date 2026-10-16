@@ -28,6 +28,8 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 （记着本仓库的提交与每个目录的树哈希）把那个提交里的 `plugins/<id>` 原样复制过去，新机器、离线首启都带着它们。
 
 - **改它们先在这里提 PR、合并**，再在 Coda 里同步到那个提交；不要直接改 Coda 里的副本（Coda 的测试会核对副本与锁文件一致）。
+- **改了哪个插件就升哪个插件的 `version`**（`plugins/<id>/` 下任何文件，含 `package-lock.json`；只改 `test/` 不用）：Coda 的插件页与遥测按版本认插件。
+  CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
 - Coda 的「检查更新」可以从这里装同一插件的新提交，盖过内置副本；只有本仓库的 `plugins/<id>` 这个来源能用这些名字。
 - 测的是插件自己代码的用例在 `test/plugins/<id>/`；把 Coda 与入口合在一起测的（启动 Coda 后端、写进 Coda 的存储）留在 Coda，对副本跑。
 
