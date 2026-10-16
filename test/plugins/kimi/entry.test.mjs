@@ -136,13 +136,31 @@ test('a cron Kimi scheduled is a timer until it fires, then handled through that
   assert.deepEqual(waiting, [{ sessionId: SESSION, waitId: 'cron-1', state: 'waiting', kind: 'timer', title: '检查 k 测量', detail: '19 3 16 10 *',
     recurring: false, stoppable: false, at: new Date(nextRun('19 3 16 10 *', now)).toISOString() }]);
   assert.equal(JSON.stringify(waiting).includes('secret'), false);
-  // Taken off the schedule as it fires, before the turn is in the file.
+  // The fire writes cron.delete and then the cron_job turn. One look that sees both is that turn, still open.
   await wireEvent(f, { type: 'cron.delete', ids: ['cron-1'], time: 20 });
-  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'handling' }]);
   await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 21, origin: { kind: 'cron_job', jobId: 'cron-1' } });
-  assert.deepEqual(await look(), []);
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'handling' }]);
   await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 30 });
   assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'done' }]);
+});
+
+test('CronDelete of a cron that has not fired cancels it, and a later turn does not leave it handling', async t => {
+  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00');
+  const session = kimiSession({ sessionId: SESSION, cwd: f.cwd, env: { KIMI_CODE_HOME: f.home }, version: '2.1.1', startedAt: 0 });
+  const waits = new KimiWaits({ sessionId: SESSION, startedAt: 0, now: () => now });
+  const look = async () => {
+    const facts = await session.observe({ signal: new AbortController().signal });
+    return (facts ? waits.read(facts) : waits.lost()).filter(m => m.method === '_coda/wait').map(m => m.params);
+  };
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: '19 3 16 10 *', recurring: false, createdAt: 10, prompt: '检查' } });
+  await look();
+  await wireEvent(f, { type: 'cron.delete', ids: ['cron-1'], time: 20 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'cancelled' }]);
+  assert.equal(waits.handling, 0);
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 30 });
+  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 40 });
+  assert.deepEqual(await look(), []);
+  assert.equal(waits.handling, 0);
 });
 
 test('a cron whose fire turn already ended is not registered, and a recurring one waits again after its turn', async t => {

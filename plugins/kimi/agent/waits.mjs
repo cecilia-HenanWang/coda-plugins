@@ -51,8 +51,9 @@ export class KimiWaits {
     return [...earlier.map(update), ...[...runs.values()].flatMap(run => [...run.told.map(wait), ...run.content.map(update), ...run.ended.map(wait)]),
       ...this.scheduled(crons)];
   }
-  // Crons still scheduled or firing (`phase`), and one that left that list: its fire turn ended, so a one-shot is done.
-  // A recurring one stays in the list and is waiting again, with its next time. `at` is that next minute in local time.
+  // Crons still scheduled or firing (`phase`). One that left the list ended: a fire that was handling is done, and a
+  // delete before it fired (CronDelete) is cancelled. A recurring one stays in the list and is waiting again, with its
+  // next time. `at` is that next minute in local time.
   scheduled(crons) {
     const told = [], live = new Set();
     for (const cron of crons) {
@@ -72,8 +73,9 @@ export class KimiWaits {
       if (live.has(id)) continue;
       const before = this.said.get(id);
       if (before === undefined || !open(before)) continue;
-      this.said.set(id, 'done');
-      told.push(wait({ sessionId: this.sessionId, waitId: id, state: 'done' }));
+      const state = before === 'handling' ? 'done' : 'cancelled';
+      this.said.set(id, state);
+      told.push(wait({ sessionId: this.sessionId, waitId: id, state }));
     }
     return told;
   }

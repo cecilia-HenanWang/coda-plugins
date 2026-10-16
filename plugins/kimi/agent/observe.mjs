@@ -67,11 +67,12 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
     return { close };
   },
   // What the files say now: every task record of its agents and the subagent runs its main agent's wire tells of (`tasks`),
-  // when its main agent last ended a turn (`turnEndedAt`, 0 for never), the crons still on its schedule or firing (`crons`,
-  // each `waiting` or `handling`; one whose fire turn already ended is left out), and what its subagents said since the last
-  // look, to `emit` as their own sessions' updates. A cron's prompt does not leave here, only a short title cut from its
-  // first line. Null when the files are not this session's, or not laid out as understood; a read that fails (a file being
-  // written) throws. A cron event that is not the shape understood is skipped, so one of them cannot hide the tasks.
+  // when its main agent last ended a turn (`turnEndedAt`, 0 for never), the crons still on its schedule or in a fire turn
+  // (`crons`, each `waiting` or `handling`), and what its subagents said since the last look, to `emit` as their own
+  // sessions' updates. A cron deleted before it fired, or whose fire turn already ended, is left out. A cron's prompt does
+  // not leave here, only a short title cut from its first line. Null when the files are not this session's, or not laid out
+  // as understood; a read that fails (a file being written) throws. A cron event that is not the shape understood is
+  // skipped, so one of them cannot hide the tasks.
   async observe({ signal, emit = () => {} }) {
     if (version !== SUPPORTED) return unread('unsupported_version');
     if (!identifier(sessionId) || !isAbsolute(home ?? '') || !isAbsolute(cwd ?? '')) return unread('unbound_session');
@@ -126,8 +127,8 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
     const lines = wire.trimEnd().split('\n');
     const metadata = JSON.parse(lines.shift());
     if (metadata.type !== 'metadata' || metadata.protocol_version !== '1.5') return unread('unsupported_layout');
-    // `cron.delete` is Kimi taking the job off the schedule as it fires, written just before that turn. A job still on the
-    // schedule is waiting; one deleted whose fire turn has not ended is handling. One whose fire turn ended is left out.
+    // `cron.delete` is both a fire (written just before the `cron_job` turn) and CronDelete of a job that has not fired.
+    // Handling is only the open fire turn. A delete with no such turn, and a fire turn that already ended, are left out.
     const crons = new Map();
     let turnId = null, turnEndedAt = 0;
     for (const line of lines) {
@@ -145,7 +146,7 @@ export function kimiSession({ sessionId, cwd, env = {}, version, startedAt = 0 }
         for (const cron of crons.values()) if (cron.fireTurn === event.turnId) cron.fireEnded = true;
       }
     }
-    return { tasks, turnEndedAt, crons: [...crons.values()].filter(cron => !cron.deletedAt || !cron.fireEnded).map(publishCron) };
+    return { tasks, turnEndedAt, crons: [...crons.values()].flatMap(cron => { const published = publishCron(cron); return published ? [published] : []; }) };
   } };
 }
 
@@ -175,6 +176,8 @@ function cronTitle(prompt) {
   return prompt.split(/\r?\n/, 1)[0].trim().split(/[`（(:：]/, 1)[0].trim().slice(0, 100);
 }
 function publishCron(cron) {
-  return { id: cron.id, schedule: cron.schedule, recurring: cron.recurring, title: cron.title,
-    phase: (cron.fireTurn !== undefined && !cron.fireEnded) || Number.isSafeInteger(cron.deletedAt) ? 'handling' : 'waiting' };
+  const firing = cron.fireTurn !== undefined && !cron.fireEnded;
+  // Gone: CronDelete before a fire, or a one-shot whose fire turn ended. The caller ends it.
+  if (!firing && cron.deletedAt) return null;
+  return { id: cron.id, schedule: cron.schedule, recurring: cron.recurring, title: cron.title, phase: firing ? 'handling' : 'waiting' };
 }
