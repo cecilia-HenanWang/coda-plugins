@@ -18,6 +18,13 @@ test('Coda is told the entry reports its waits, and codex-acp is asked for subag
   assert.deepEqual(answer.result.agentCapabilities, { loadSession: true, sessionCapabilities: { systemPrompt: {} }, _meta: { coda: { waits: {} } } });
 });
 
+test('the handshake names the Codex it runs, not codex-acp', () => {
+  const waits = new CodexWaits({ agentInfo: { name: 'codex', version: '0.162.1' } });
+  waits.fromCoda({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } });
+  const [answer] = waits.fromAgent({ jsonrpc: '2.0', id: 0, result: { protocolVersion: 1, agentInfo: { name: '@agentclientprotocol/codex-acp', version: '1.12.0' } } });
+  assert.deepEqual(answer.result.agentInfo, { name: 'codex', version: '0.162.1' });
+});
+
 test('subagents and background commands are waits; a continued subagent is a new wait of the same child session', () => {
   const waits = new CodexWaits();
   waits.fromCoda({ jsonrpc: '2.0', id: 1, method: 'session/new', params: { cwd: '/', mcpServers: [] } });

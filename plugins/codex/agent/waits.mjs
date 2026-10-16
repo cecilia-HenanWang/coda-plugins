@@ -13,9 +13,10 @@ const TASK_END = { completed: 'done', failed: 'failed', stopped: 'cancelled' };
 const AIR = { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks'] };
 
 export class CodexWaits {
-  constructor() {
+  // `agentInfo`: the Codex it runs, said in place of codex-acp's own name and version.
+  constructor({ agentInfo = null } = {}) {
     // The root session; Coda's requests whose answers are read here, by id; the waits said, by id.
-    this.root = null; this.asked = new Map(); this.waits = new Map();
+    this.root = null; this.asked = new Map(); this.waits = new Map(); this.agentInfo = agentInfo;
   }
   // What Coda says: `agent`, what codex-acp is told; `coda`, what Coda is answered here.
   fromCoda(message) {
@@ -97,8 +98,8 @@ export class CodexWaits {
     const capabilities = record(message.result.agentCapabilities) ? message.result.agentCapabilities : {};
     const meta = record(capabilities._meta) ? capabilities._meta : {};
     const sessions = record(capabilities.sessionCapabilities) ? capabilities.sessionCapabilities : {};
-    return { ...message, result: { ...message.result, agentCapabilities: { ...capabilities, sessionCapabilities: { ...sessions, systemPrompt: {} },
-      _meta: { ...meta, coda: { waits: {} } } } } };
+    return { ...message, result: { ...message.result, ...(this.agentInfo ? { agentInfo: this.agentInfo } : {}),
+      agentCapabilities: { ...capabilities, sessionCapabilities: { ...sessions, systemPrompt: {} }, _meta: { ...meta, coda: { waits: {} } } } } };
   }
 }
 const cut = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : undefined;

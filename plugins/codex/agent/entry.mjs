@@ -4,9 +4,10 @@
 // and a steer that finds no turn going is answered `promptRequired` (steering.mjs). What Coda wants of Codex beyond ACP is set
 // here: the mode a session starts in, and which Codex program runs, through the account bridge when another plugin chooses
 // the account (accounts.mjs).
-import { registerHooks } from 'node:module';
+import { createRequire, registerHooks } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { accountSource } from './account-source.mjs';
@@ -25,6 +26,13 @@ import { explainCodexError, reportedCodexFailures } from './errors.mjs';
 const env = process.env;
 // A session starts read-only, unless its machine's configuration says otherwise.
 env.INITIAL_AGENT_MODE ??= 'read-only';
+// The Codex this session runs, as the handshake's `agentInfo` names it (Coda's protocol「Agent 版本」): the connection's own
+// program when it sets one, else the plugin's locked @openai/codex.
+const own = env.CODEX_PATH;
+function codexVersion() {
+  if (own) return /\d+\.\d+\.\d+[\w.+-]*/.exec(spawnSync(own, ['--version'], { encoding: 'utf8', timeout: 3000 }).stdout ?? '')?.[0] ?? null;
+  try { return JSON.parse(readFileSync(createRequire(import.meta.url).resolve('@openai/codex/package.json'), 'utf8')).version; } catch { return null; }
+}
 // Another plugin plugged into Codex's `account-source` point chooses the account (accounts.mjs): codex-acp then runs the
 // account bridge as its Codex, through a small program written into this plugin's state, named for what it runs. A Codex
 // program of the connection's own (`CODEX_PATH`) keeps its own login.
@@ -36,7 +44,8 @@ if (!env.CODEX_PATH && accountSource(env) && env.CODA_PLUGIN_STATE) {
   env.CODEX_PATH = shim;
 }
 
-const waits = new CodexWaits(), parse = line => { try { return JSON.parse(line); } catch { return null; } };
+const version = codexVersion();
+const waits = new CodexWaits({ agentInfo: version ? { name: 'codex', version } : null }), parse = line => { try { return JSON.parse(line); } catch { return null; } };
 const say = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 listen(line => { for (const message of waits.fromAgent(parse(line))) say(explainCodexError(message)); });
 readLines(process.stdin).on('line', line => {
