@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { kimiSession } from '../../../plugins/kimi/agent/observe.mjs';
-import { KimiWaits } from '../../../plugins/kimi/agent/waits.mjs';
+import { KimiWaits, nextRun } from '../../../plugins/kimi/agent/waits.mjs';
 import { KimiRelay } from '../../../plugins/kimi/agent/relay.mjs';
 import { MINIMUM, needed } from '../../../plugins/kimi/scripts/setup.mjs';
 
@@ -115,6 +115,64 @@ test('tasks from before this agent process are not told', async t => {
   const f = await layout(t);
   await f.task('old', { status: 'running', startedAt: 1 });
   assert.deepEqual(await looker(f, { startedAt: 10 })(), []);
+});
+
+// A cron's full wait, not only its state. `now` pins the next run.
+function cronLooker(f, now) {
+  const session = kimiSession({ sessionId: SESSION, cwd: f.cwd, env: { KIMI_CODE_HOME: f.home }, version: '2.1.1', startedAt: 0 });
+  const waits = new KimiWaits({ sessionId: SESSION, startedAt: 0, now: () => now });
+  return async () => {
+    const facts = await session.observe({ signal: new AbortController().signal });
+    return (facts ? waits.read(facts) : waits.lost()).filter(m => m.method === '_coda/wait').map(m => m.params);
+  };
+}
+const wireEvent = (f, event) => appendFile(f.wire, JSON.stringify(event) + '\n');
+
+test('a cron Kimi scheduled is a timer until it fires, then handled through that turn', async t => {
+  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00'), look = cronLooker(f, now);
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: '19 3 16 10 *', recurring: false, createdAt: 10,
+    prompt: '检查 k 测量：`/tmp/secret`\n其余不要带出去' } });
+  const waiting = await look();
+  assert.deepEqual(waiting, [{ sessionId: SESSION, waitId: 'cron-1', state: 'waiting', kind: 'timer', title: '检查 k 测量', detail: '19 3 16 10 *',
+    recurring: false, stoppable: false, at: new Date(nextRun('19 3 16 10 *', now)).toISOString() }]);
+  assert.equal(JSON.stringify(waiting).includes('secret'), false);
+  // Taken off the schedule as it fires, before the turn is in the file.
+  await wireEvent(f, { type: 'cron.delete', ids: ['cron-1'], time: 20 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'handling' }]);
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 21, origin: { kind: 'cron_job', jobId: 'cron-1' } });
+  assert.deepEqual(await look(), []);
+  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 30 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'done' }]);
+});
+
+test('a cron whose fire turn already ended is not registered, and a recurring one waits again after its turn', async t => {
+  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00');
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'gone', cron: '19 3 16 10 *', recurring: false, createdAt: 10, prompt: '已过' } });
+  await wireEvent(f, { type: 'cron.delete', ids: ['gone'], time: 20 });
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 21, origin: { kind: 'cron_job', jobId: 'gone' } });
+  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 30 });
+  const look = cronLooker(f, now);
+  assert.deepEqual(await look(), []);
+  await wireEvent(f, { type: 'cron.add', time: 40, task: { id: 'again', cron: '0 * * * *', recurring: true, createdAt: 40, prompt: '每小时' } });
+  assert.equal((await look())[0].state, 'waiting');
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 2, time: 41, origin: { kind: 'cron_job', jobId: 'again' } });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'again', state: 'handling' }]);
+  await wireEvent(f, { type: 'turn.ended', turnId: 2, agentId: 'main', reason: 'completed', time: 50 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'again', state: 'waiting', at: new Date(nextRun('0 * * * *', now)).toISOString() }]);
+});
+
+test('a cron event that is not the shape understood does not hide a background command', async t => {
+  const f = await layout(t), look = looker(f);
+  await f.task('bash-1', { status: 'running', startedAt: 1, description: 'npm test' });
+  await wireEvent(f, { type: 'cron.add', task: { id: 'nope' } });
+  await wireEvent(f, { type: 'cron.delete', ids: 'cron-1' });
+  assert.deepEqual(await look(), [['bash-1', 'waiting']]);
+});
+
+test('a five-field cron matches the next local minute, and one that never does has no time', () => {
+  assert.equal(nextRun('19 3 16 10 *', Date.parse('2026-10-16T02:15:00')), Date.parse('2026-10-16T03:19:00'));
+  assert.equal(nextRun('0 0 31 2 *'), null);
+  assert.equal(nextRun('every hour'), null);
 });
 
 // The relay, with Kimi and its files stood in for.
