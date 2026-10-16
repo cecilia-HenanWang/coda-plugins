@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { kimiSession } from '../../../plugins/kimi/agent/observe.mjs';
-import { KimiWaits, nextRun } from '../../../plugins/kimi/agent/waits.mjs';
+import { KimiWaits, nextFire, nextRun } from '../../../plugins/kimi/agent/waits.mjs';
 import { KimiRelay } from '../../../plugins/kimi/agent/relay.mjs';
 import { MINIMUM, needed } from '../../../plugins/kimi/scripts/setup.mjs';
 
@@ -117,24 +117,27 @@ test('tasks from before this agent process are not told', async t => {
   assert.deepEqual(await looker(f, { startedAt: 10 })(), []);
 });
 
-// A cron's full wait, not only its state. `now` pins the next run.
-function cronLooker(f, now) {
-  const session = kimiSession({ sessionId: SESSION, cwd: f.cwd, env: { KIMI_CODE_HOME: f.home }, version: '2.1.1', startedAt: 0 });
+// A cron's full wait, not only its state. `now` is the system clock the schedule is read against.
+function cronLooker(f, now, env = {}) {
+  const session = kimiSession({ sessionId: SESSION, cwd: f.cwd, env: { ...env, KIMI_CODE_HOME: f.home }, version: '2.1.1', startedAt: 0 });
   const waits = new KimiWaits({ sessionId: SESSION, startedAt: 0, now: () => now });
-  return async () => {
+  const look = async () => {
     const facts = await session.observe({ signal: new AbortController().signal });
     return (facts ? waits.read(facts) : waits.lost()).filter(m => m.method === '_coda/wait').map(m => m.params);
   };
+  return Object.assign(look, { waits });
 }
 const wireEvent = (f, event) => appendFile(f.wire, JSON.stringify(event) + '\n');
+const at = (cron, now, noJitter = false) => new Date(nextFire(cron, now, noJitter)).toISOString();
 
 test('a cron Kimi scheduled is a timer until it fires, then handled through that turn', async t => {
-  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00'), look = cronLooker(f, now);
-  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: '19 3 16 10 *', recurring: false, createdAt: 10,
+  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00'), createdAt = Date.parse('2026-10-16T02:00:00'), look = cronLooker(f, now);
+  const cron = { id: 'cron-1', schedule: '19 3 16 10 *', recurring: false, createdAt };
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: cron.schedule, recurring: false, createdAt,
     prompt: '检查 k 测量：`/tmp/secret`\n其余不要带出去' } });
   const waiting = await look();
   assert.deepEqual(waiting, [{ sessionId: SESSION, waitId: 'cron-1', state: 'waiting', kind: 'timer', title: '检查 k 测量', detail: '19 3 16 10 *',
-    recurring: false, stoppable: false, at: new Date(nextRun('19 3 16 10 *', now)).toISOString() }]);
+    recurring: false, stoppable: false, at: at(cron, now) }]);
   assert.equal(JSON.stringify(waiting).includes('secret'), false);
   // The fire writes cron.delete and then the cron_job turn. One look that sees both is that turn, still open.
   await wireEvent(f, { type: 'cron.delete', ids: ['cron-1'], time: 20 });
@@ -144,39 +147,85 @@ test('a cron Kimi scheduled is a timer until it fires, then handled through that
   assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'done' }]);
 });
 
-test('CronDelete of a cron that has not fired cancels it, and a later turn does not leave it handling', async t => {
-  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00');
+test('a one-shot that fires and ends between looks is done, and a delete seen before its turn is not a cancel', async t => {
+  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00'), createdAt = Date.parse('2026-10-16T02:00:00');
   const session = kimiSession({ sessionId: SESSION, cwd: f.cwd, env: { KIMI_CODE_HOME: f.home }, version: '2.1.1', startedAt: 0 });
   const waits = new KimiWaits({ sessionId: SESSION, startedAt: 0, now: () => now });
   const look = async () => {
     const facts = await session.observe({ signal: new AbortController().signal });
     return (facts ? waits.read(facts) : waits.lost()).filter(m => m.method === '_coda/wait').map(m => m.params);
   };
-  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: '19 3 16 10 *', recurring: false, createdAt: 10, prompt: '检查' } });
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'soon', cron: '19 3 16 10 *', recurring: false, createdAt, prompt: '即将' } });
   await look();
+  // The scheduler writes cron.delete, then the cron_job turn. A look in between must not end it.
+  await wireEvent(f, { type: 'cron.delete', ids: ['soon'], time: 20 });
+  assert.deepEqual(await look(), []);
+  assert.equal(waits.handling, 0);
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 21, origin: { kind: 'cron_job', jobId: 'soon' } });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'soon', state: 'handling' }]);
+  assert.equal(waits.handling, 1);
+  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 30 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'soon', state: 'done' }]);
+  await wireEvent(f, { type: 'cron.add', time: 40, task: { id: 'gap', cron: '19 3 16 10 *', recurring: false, createdAt, prompt: '一轮之间' } });
+  await look();
+  await wireEvent(f, { type: 'cron.delete', ids: ['gap'], time: 50 });
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 2, time: 51, origin: { kind: 'cron_job', jobId: 'gap' } });
+  await wireEvent(f, { type: 'turn.ended', turnId: 2, agentId: 'main', reason: 'completed', time: 60 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'gap', state: 'done' }]);
+});
+
+test('CronDelete of a cron that has not fired cancels it once that turn is open, and a later turn does not leave it handling', async t => {
+  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00'), createdAt = Date.parse('2026-10-16T02:00:00');
+  const session = kimiSession({ sessionId: SESSION, cwd: f.cwd, env: { KIMI_CODE_HOME: f.home }, version: '2.1.1', startedAt: 0 });
+  const waits = new KimiWaits({ sessionId: SESSION, startedAt: 0, now: () => now });
+  const look = async () => {
+    const facts = await session.observe({ signal: new AbortController().signal });
+    return (facts ? waits.read(facts) : waits.lost()).filter(m => m.method === '_coda/wait').map(m => m.params);
+  };
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: '19 3 16 10 *', recurring: false, createdAt, prompt: '检查' } });
+  await look();
+  // The tool runs inside the turn that is already going, which is not a cron_job of this id.
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 15 });
   await wireEvent(f, { type: 'cron.delete', ids: ['cron-1'], time: 20 });
   assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'cron-1', state: 'cancelled' }]);
   assert.equal(waits.handling, 0);
-  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 30 });
-  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 40 });
+  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 25 });
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 2, time: 30 });
+  await wireEvent(f, { type: 'turn.ended', turnId: 2, agentId: 'main', reason: 'completed', time: 40 });
   assert.deepEqual(await look(), []);
   assert.equal(waits.handling, 0);
 });
 
 test('a cron whose fire turn already ended is not registered, and a recurring one waits again after its turn', async t => {
-  const f = await layout(t), now = Date.parse('2026-10-16T02:15:00');
-  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'gone', cron: '19 3 16 10 *', recurring: false, createdAt: 10, prompt: '已过' } });
+  const f = await layout(t), now = Date.parse('2026-10-16T11:02:00'), createdAt = Date.parse('2026-10-16T10:30:00');
+  const cron = { id: 'again', schedule: '0 * * * *', recurring: true, createdAt };
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'gone', cron: '19 3 16 10 *', recurring: false, createdAt, prompt: '已过' } });
   await wireEvent(f, { type: 'cron.delete', ids: ['gone'], time: 20 });
   await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 21, origin: { kind: 'cron_job', jobId: 'gone' } });
   await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 30 });
   const look = cronLooker(f, now);
   assert.deepEqual(await look(), []);
-  await wireEvent(f, { type: 'cron.add', time: 40, task: { id: 'again', cron: '0 * * * *', recurring: true, createdAt: 40, prompt: '每小时' } });
+  await wireEvent(f, { type: 'cron.add', time: 40, task: { id: 'again', cron: '0 * * * *', recurring: true, createdAt, prompt: '每小时' } });
   assert.equal((await look())[0].state, 'waiting');
   await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 2, time: 41, origin: { kind: 'cron_job', jobId: 'again' } });
   assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'again', state: 'handling' }]);
+  await wireEvent(f, { type: 'cron.cursor', id: 'again', lastFiredAt: Date.parse('2026-10-16T11:00:00') });
   await wireEvent(f, { type: 'turn.ended', turnId: 2, agentId: 'main', reason: 'completed', time: 50 });
-  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'again', state: 'waiting', at: new Date(nextRun('0 * * * *', now)).toISOString() }]);
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'again', state: 'waiting', at: at({ ...cron, lastFiredAt: Date.parse('2026-10-16T11:00:00') }, now) }]);
+});
+
+test('a recurring round that falls between looks moves the next fire even though it is still waiting', async t => {
+  const f = await layout(t), now = Date.parse('2026-10-16T11:02:00'), createdAt = Date.parse('2026-10-16T10:30:00'), look = cronLooker(f, now);
+  const cron = { id: 'deadbeef', schedule: '0 * * * *', recurring: true, createdAt };
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'deadbeef', cron: '0 * * * *', recurring: true, createdAt, prompt: '每小时' } });
+  const waiting = await look();
+  assert.equal(waiting[0].at, at(cron, now));
+  assert.notEqual(waiting[0].at, new Date(nextRun('0 * * * *', now)).toISOString());
+  const fired = Date.parse('2026-10-16T11:00:00');
+  await wireEvent(f, { type: 'cron.cursor', id: 'deadbeef', lastFiredAt: fired });
+  await wireEvent(f, { type: 'turn.prompt', agentId: 'main', turnId: 1, time: 20, origin: { kind: 'cron_job', jobId: 'deadbeef' } });
+  await wireEvent(f, { type: 'turn.ended', turnId: 1, agentId: 'main', reason: 'completed', time: 30 });
+  assert.deepEqual(await look(), [{ sessionId: SESSION, waitId: 'deadbeef', state: 'waiting', at: at({ ...cron, lastFiredAt: fired }, now) }]);
 });
 
 test('a cron event that is not the shape understood does not hide a background command', async t => {
@@ -184,13 +233,69 @@ test('a cron event that is not the shape understood does not hide a background c
   await f.task('bash-1', { status: 'running', startedAt: 1, description: 'npm test' });
   await wireEvent(f, { type: 'cron.add', task: { id: 'nope' } });
   await wireEvent(f, { type: 'cron.delete', ids: 'cron-1' });
+  await wireEvent(f, { type: 'cron.cursor', id: 5, lastFiredAt: 'soon' });
   assert.deepEqual(await look(), [['bash-1', 'waiting']]);
 });
 
-test('a five-field cron matches the next local minute, and one that never does has no time', () => {
+test('an unreadable cron expression is a timer with no time', async t => {
+  const f = await layout(t), look = cronLooker(f, Date.parse('2026-10-16T02:15:00'));
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'cron-1', cron: 'every hour', recurring: true, createdAt: Date.parse('2026-10-16T02:00:00'), prompt: '不行' } });
+  const waiting = await look();
+  assert.equal(waiting[0].state, 'waiting');
+  assert.equal('at' in waiting[0], false);
+});
+
+test('the next fire follows the id, the cursor and the schedule config', async t => {
+  const f = await layout(t), createdAt = Date.parse('2026-10-16T10:30:00'), now = Date.parse('2026-10-16T11:02:00');
+  const cron = { id: 'deadbeef', schedule: '0 * * * *', recurring: true, createdAt };
+  await wireEvent(f, { type: 'cron.add', time: 10, task: { id: 'deadbeef', cron: '0 * * * *', recurring: true, createdAt, prompt: '每小时' } });
+  // A config with no [cron] table, however quoted its other tables, keeps the default offset.
+  await writeFile(join(f.home, 'config.toml'), '[models."kimi-code/k3"]\nmodel = "k3"\n');
+  assert.equal((await cronLooker(f, now)())[0].at, at(cron, now));
+  await writeFile(join(f.home, 'config.toml'), '[cron]\nno_jitter = true # pinned\n');
+  assert.equal((await cronLooker(f, now)())[0].at, at(cron, now, true));
+  await writeFile(join(f.home, 'config.toml'), '[cron]\nno_jitter = false\n');
+  assert.equal((await cronLooker(f, now, { KIMI_CRON_NO_JITTER: '1' })())[0].at, at(cron, now, true));
+  assert.equal((await cronLooker(f, now, { KIMI_CRON_NO_JITTER: 'true' })())[0].at, at(cron, now));
+  await writeFile(join(f.home, 'config.toml'), '[cron]\ndisabled = true\n');
+  assert.equal('at' in (await cronLooker(f, now)())[0], false);
+  await writeFile(join(f.home, 'config.toml'), '[cron]\nclock = "file:clock"\n');
+  assert.equal('at' in (await cronLooker(f, now)())[0], false);
+  const fileNow = Date.parse('2026-10-16T10:40:00'), cursor = Date.parse('2026-10-16T11:00:00');
+  const clockPath = join(f.root, 'clock');
+  await writeFile(clockPath, `${fileNow}\n`);
+  await writeFile(join(f.home, 'config.toml'), `[cron]\nclock = ${JSON.stringify(`file:${clockPath}`)}\n`);
+  await wireEvent(f, { type: 'cron.cursor', id: 'deadbeef', lastFiredAt: cursor });
+  const held = (await cronLooker(f, Date.parse('2026-10-16T11:30:00'))())[0].at;
+  assert.equal(held, at(cron, fileNow));
+  assert.notEqual(held, at({ ...cron, lastFiredAt: cursor }, Date.parse('2026-10-16T11:30:00')));
+});
+
+test('a five-field cron matches the next local minute, and Kimi offsets that minute from the cursor', () => {
   assert.equal(nextRun('19 3 16 10 *', Date.parse('2026-10-16T02:15:00')), Date.parse('2026-10-16T03:19:00'));
   assert.equal(nextRun('0 0 31 2 *'), null);
   assert.equal(nextRun('every hour'), null);
+  const fraction = 0xdeadbeef / 4294967296;
+  const createdAt = Date.parse('2026-10-16T10:30:00'), now = Date.parse('2026-10-16T11:02:00');
+  const hourly = { id: 'deadbeef', schedule: '0 * * * *', recurring: true, createdAt };
+  assert.equal(nextFire(hourly, now, false), Date.parse('2026-10-16T11:00:00') + 3_600_000 * 0.1 * fraction);
+  assert.equal(nextRun('0 * * * *', now), Date.parse('2026-10-16T12:00:00'));
+  assert.equal(nextFire({ ...hourly, lastFiredAt: Date.parse('2026-10-16T11:00:00') }, now, false), Date.parse('2026-10-16T12:00:00') + 3_600_000 * 0.1 * fraction);
+  assert.equal(nextFire(hourly, now, true), Date.parse('2026-10-16T11:00:00'));
+  assert.equal(nextFire({ ...hourly, lastFiredAt: Date.parse('2026-10-16T11:00:00') }, Date.parse('2026-10-16T10:40:00'), false), nextFire(hourly, Date.parse('2026-10-16T10:40:00'), false));
+  const daily = { id: 'deadbeef', schedule: '0 0 * * *', recurring: true, createdAt: Date.parse('2026-10-16T01:00:00') };
+  assert.equal(nextFire(daily, daily.createdAt, false), Date.parse('2026-10-17T00:00:00') + 15 * 60_000 * fraction);
+  const onceAt = Date.parse('2026-10-16T04:00:00'), once = { id: 'deadbeef', schedule: '0 4 16 10 *', recurring: false, createdAt: Date.parse('2026-10-16T02:00:00') };
+  assert.equal(nextFire(once, Date.parse('2026-10-16T04:00:30'), false), onceAt - 90_000 * fraction);
+  assert.equal(nextRun('0 4 16 10 *', Date.parse('2026-10-16T04:00:30')), Date.parse('2027-10-16T04:00:00'));
+  assert.equal(nextFire({ id: 'deadbeef', schedule: '19 3 16 10 *', recurring: false, createdAt: Date.parse('2026-10-16T02:00:00') }, Date.parse('2026-10-16T02:15:00'), false), Date.parse('2026-10-16T03:19:00'));
+  assert.equal(nextFire({ id: 'ffffffff', schedule: '0 4 16 10 *', recurring: false, createdAt: onceAt - 1000 }, onceAt - 1000, false), onceAt);
+  assert.equal(nextFire({ id: 'deadbeef', schedule: 'every hour', recurring: true, createdAt: 1 }, 1, false), null);
+  // An id that is not eight hex digits takes the same fraction Kimi hashes.
+  let hash = 5381;
+  for (const ch of 'cron-1') hash = (hash << 5) + hash + ch.charCodeAt(0) | 0;
+  const hashed = { id: 'cron-1', schedule: '0 * * * *', recurring: true, createdAt };
+  assert.equal(nextFire(hashed, now, false), Date.parse('2026-10-16T11:00:00') + 3_600_000 * 0.1 * ((hash >>> 0) / 4294967296));
 });
 
 // The relay, with Kimi and its files stood in for.
