@@ -5,6 +5,7 @@
 // withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports go to the file
 // the plugin's「Claude」panel reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session.
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
@@ -15,6 +16,12 @@ import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from 
 import { permissionRequest } from './permissions.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
+
+// The Claude Agent SDK this entry runs, as the handshake's `agentInfo` names it (Coda's protocol「Agent 版本」).
+const SDK = (() => {
+  try { return JSON.parse(readFileSync(new URL('./package.json', import.meta.resolve('@anthropic-ai/claude-agent-sdk')), 'utf8')).version; }
+  catch { return null; }
+})();
 
 // Coda's session instructions (docs/agent-protocol.md「会话指令」), ACP's `systemPrompt`: its text, '' when there is none. Only
 // text appended to the agent's own is understood; anything else is refused before a session opens.
@@ -59,7 +66,7 @@ export class ClaudeSession {
   }
   connect(stream) {
     this.connection = agent({ name: 'coda-claude' })
-      .onRequest('initialize', () => ({ protocolVersion: PROTOCOL_VERSION, agentInfo: { name: 'coda-claude', version: '1' },
+      .onRequest('initialize', () => ({ protocolVersion: PROTOCOL_VERSION, agentInfo: SDK ? { name: 'claude-agent-sdk', version: SDK } : { name: 'coda-claude', version: '1' },
         agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } } }))
       // The SDK's own reading of these drops what its schema does not name, `systemPrompt` among them: they are read as sent.
       .onRequest('session/new', params => params ?? {}, ({ params }) => this.open(params))

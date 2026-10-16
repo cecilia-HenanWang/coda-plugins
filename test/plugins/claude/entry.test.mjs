@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -56,6 +57,8 @@ test('session/new lists the concrete models the SDK resolves its rows to, and se
   const c = await setup(t);
   const init = (await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result;
   assert.deepEqual(init.agentCapabilities, { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } });
+  // The SDK it runs, by its own package version.
+  assert.deepEqual(init.agentInfo, { name: 'claude-agent-sdk', version: JSON.parse(readFileSync(new URL('../../../plugins/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json', import.meta.url), 'utf8')).version });
   const opened = (await c.request('session/new', { cwd: c.cwd, mcpServers: [{ name: 'coda', command: 'node', args: ['shim.mjs'], env: [] }] })).result;
   c.sessionId = opened.sessionId; c.query = queries.get(opened.sessionId);
   const option = id => opened.configOptions.find(o => o.id === id);
