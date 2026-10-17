@@ -188,6 +188,10 @@ describe('manifests Coda does not take', () => {
   test('a command over two lines', () => manifestFails({ agent: { command: 'exec a\nexec b' } }, 'manifest.agents', /一行/));
   test('a key Coda does not read', () => manifestFails({ agent: { args: ['acp'] } }, 'manifest.agents', /不支持的键：args/));
   test('a built-in plugin name', () => manifestFails({ manifest: { name: 'grok' } }, 'manifest.name', /内置插件同名/));
+  test('an independently distributed plugin is not reserved by Coda', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { name: 'machine-stats' } }), { manifestOnly: true });
+    assertPasses(report, ['manifest.name']);
+  });
   test('a built-in agent ID', () => manifestFails({ agent: { id: 'claude-sdk' } }, 'manifest.agent-id', /内置插件 claude/));
   test('npm dependencies without a lock file', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } } }, 'source.npm', /没有 package-lock\.json/));
   test('a lock file that does not match the dependencies', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } },
