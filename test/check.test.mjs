@@ -187,7 +187,12 @@ describe('manifests Coda does not take', () => {
   test('an icon that is not a PDF', () => manifestFails({ agent: { icon: { light: 'icon.svg' } }, files: { 'icon.svg': '<svg/>' } }, 'manifest.agents', /须为 PDF/));
   test('a command over two lines', () => manifestFails({ agent: { command: 'exec a\nexec b' } }, 'manifest.agents', /一行/));
   test('a key Coda does not read', () => manifestFails({ agent: { args: ['acp'] } }, 'manifest.agents', /不支持的键：args/));
-  test('a built-in plugin name', () => manifestFails({ manifest: { name: 'grok' } }, 'manifest.name', /内置插件同名/));
+  test('built-in names can be reused after uninstalling; the backend checks installed state', async () => {
+    for (const name of ['grok', 'review', 'host']) {
+      const { report } = await checkPlugin(plugin({ manifest: { name } }), { manifestOnly: true });
+      assertPasses(report, ['manifest.name']);
+    }
+  });
   test('an independently distributed plugin is not reserved by Coda', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { name: 'machine-stats' } }), { manifestOnly: true });
     assertPasses(report, ['manifest.name']);
@@ -207,7 +212,7 @@ describe('manifests Coda does not take', () => {
     const { report } = await checkPlugin(dir, { manifestOnly: true });
     assert.deepEqual(failed(report), ['source.symlink']);
   });
-  test('a built-in plugin\'s name is its own source\'s alone, and the old Claude agent ID nobody\'s', async () => {
+  test('a built-in plugin or its replacement can declare its own agent, and the old Claude agent ID stays reserved', async () => {
     // A repository with the plugin where this one keeps it, fetched from here or from somewhere else.
     const repo = (remote, agent) => {
       const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-repo-')), dir = join(top, 'plugins/claude');
@@ -224,8 +229,7 @@ describe('manifests Coda does not take', () => {
     assert.deepEqual(failed(await check(repo('git@github.com:coda-console/coda-plugins.git', 'claude-sdk'))), []);
     assert.deepEqual(failed(await check(repo('https://github.com/coda-console/coda-plugins', 'claude'))), ['manifest.agent-id']);
     const elsewhere = await check(repo('https://github.com/someone/coda-plugins', 'claude-sdk'));
-    assert.deepEqual(failed(elsewhere), ['manifest.name', 'manifest.agent-id']);
-    assert.match(elsewhere.failures[0].message, /只有 coda-console\/coda-plugins 的 plugins\/claude/);
+    assert.deepEqual(failed(elsewhere), []);
   });
   test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { menus: [] } } }, 'manifest.contributes'));
   test('a command Coda answers for itself, or one on two lines', async () => {

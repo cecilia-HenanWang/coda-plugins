@@ -141,7 +141,7 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 「设置 › 插件 › 从仓库添加…」：
 
 1. **仓库**填 `coda-console/coda-plugins`（或 `https://github.com/coda-console/coda-plugins`）；**版本**留空是默认分支，也可以填分支、标签或完整的提交号。
-2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与两个模板（与 Coda 内置同名的六个，要 Coda 支持从同一来源更新内置插件之后才装得上）。
+2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与两个模板。内置插件可以从自身来源单独更新；卸载后，也可以从其他来源安装同名替代插件。
 3. 选一个，确认里逐条列出它会运行的命令（Agent 的 `command`、面板的命令与动作），确认就是批准：这些命令以你的账户在空间里每台机器上运行，Coda 不做隔离，只装你信任的来源。
 
 **Coda 只认提交**：安装时钉在读取到的那个提交上，每台机器各自取同一个提交。「检查更新」用记下的仓库与版本再读一次，提交变了才有更新；
@@ -155,7 +155,7 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 
 **清单**（`package.json`）
 
-- `name` 是插件 ID：小写字母、数字和 `-`，以字母开头，至多 40 个字符；不能与 Coda 内置插件同名（`claude`、`codex`、`grok`、`kimi`、`opencode`、`review` 等，完整列表见 `check/coda.mjs`）。
+- `name` 是插件 ID：小写字母、数字和 `-`，以字母开头，至多 40 个字符。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。检查器不读取机器的安装状态，同名占用由 Coda 在读取来源和安装时检查。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
 - `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
 - `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与面板命令同样的规则），没有别的键。
