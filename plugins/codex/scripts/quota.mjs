@@ -1,8 +1,19 @@
+import { createHash } from 'node:crypto';
+
 // What the Codex panel shows of a login (docs/plugins.md「内置插件：Codex」), from what Codex's app-server says of it:
 // `account/read` and `account/rateLimits/read`. Kept apart from the commands so the tests can hand it answers.
 
 const CARD_ITEMS = 20;
 const line = (value, max = 80) => typeof value === 'string' ? [...value.replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '';
+// The account a card shows, compared across machines by Coda's group view (its panel cards' `identity`): who signed in
+// and in which ChatGPT workspace, as the quota is one person's in one workspace (one email may sign in to several, and a
+// workspace has many members). A hash of the email and of the workspace's account ID hashed as codex-account keeps it;
+// none where Codex does not say both.
+const hash = text => createHash('sha256').update(text).digest('hex');
+const identity = (account, workspace) => {
+  const email = line(account.email, 320).toLowerCase();
+  return email && typeof workspace === 'string' && workspace ? { identity: `codex:${hash(`${email}\n${hash(workspace)}`)}` } : {};
+};
 const unixTime = value => typeof value === 'number' && Number.isFinite(new Date(value * 1000).getTime()) ? new Date(value * 1000).toISOString() : null;
 // A credit's expiry as the clients write times (UTC+8), here because a figure's value is text.
 export function utc8(seconds) {
@@ -38,7 +49,7 @@ export function credits(result) {
 
 // The login's card: its button for a full reset (the one to expire first, named in its question), its windows, then its
 // resets one line each.
-export function card(account, result) {
+export function card(account, result, workspace) {
   const name = line(account.email) || '本机登录';
   const items = windows(result), resets = credits(result);
   if (resets) {
@@ -50,23 +61,24 @@ export function card(account, result) {
       confirm: `使用 ${line(name, 60)} 的完全重置？\n用最早到期的那一次（${first.expiresAt == null ? '不会过期' : `${utc8(first.expiresAt)} 到期，UTC+8`}）。成功后消耗 1 次，无法撤销。` });
   }
   if (!items.length) items.push({ type: 'error', text: '暂时无法获取额度：Codex 没有给出额度窗口' });
-  return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), items: items.slice(0, CARD_ITEMS) };
+  return { type: 'card', title: name, ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account, workspace), items: items.slice(0, CARD_ITEMS) };
 }
 
 // The panel: nothing without a login (it is then offered under「添加资源」), a card for one. Quota Codex cannot read stays
 // on the card, which keeps「重新登录」 at hand; one not signed in with ChatGPT has no windows to read.
 export async function panel(server) {
-  const { account } = await server.request('account/read', { refreshToken: false });
+  const { account, workspaceRouting } = await server.request('account/read', { refreshToken: false });
+  const workspace = workspaceRouting?.chatgptAccountId;
   if (!account) return { items: [] };
   if (account.type !== 'chatgpt') return { items: [{ type: 'card', title: '本机登录', subtitle: line(account.type),
     items: [{ type: 'markdown', text: '不是用 ChatGPT 账号登录的，没有额度可显示' }] }] };
   let result;
   try { result = await server.request('account/rateLimits/read'); }
   catch (error) {
-    return { items: [{ type: 'card', title: line(account.email) || '本机登录', ...(line(account.planType) ? { subtitle: line(account.planType) } : {}),
+    return { items: [{ type: 'card', title: line(account.email) || '本机登录', ...(line(account.planType) ? { subtitle: line(account.planType) } : {}), ...identity(account, workspace),
       items: [{ type: 'error', text: `暂时无法获取额度：${error.message}` }] }] };
   }
-  return { items: [card(account, result)] };
+  return { items: [card(account, result, workspace)] };
 }
 
 // What a full reset came to, as one line for the panel when it did not reset anything.

@@ -65,6 +65,8 @@ test('the quota is what the plan has left, booster balance included; who is sign
   assert.deepEqual(windows({ kind: 'ok', quota: { usages: { limit5h: { usedRatio: '0.3' }, limit7d: { usedRatio: -1 }, monthTotal: {} }, extraUsage: { totalCents: 'x', balanceCents: 5 } } }), []);
   assert.equal(windows({ kind: 'error' }), null);
   assert.deepEqual(account({ kind: 'ok', userInfo: { nickname: ' 登月者0448 ', userLevelName: 'Allegretto', email: 'x@example.com' } }), { name: '登月者0448', plan: 'Allegretto' });
+  // The account Coda's group view compares across machines: its user ID.
+  assert.deepEqual(account({ kind: 'ok', userInfo: { userId: 42, nickname: 'a', userLevelName: 'b' } }), { name: 'a', plan: 'b', id: '42' });
   assert.equal(account({ kind: 'error', status: 401 }), null, 'Kimi refuses the login');
   assert.throws(() => account({ kind: 'error', message: 'timed out' }), /没有说明/, 'a passing fault is not a sign-out');
   const shown = card({ name: '', plan: '' }, { error: 'Kimi 本地服务返回 500' });
@@ -103,15 +105,18 @@ test('the panel shows the login and its quota, asks who it is once per state of 
   assert.deepEqual(await read(), [], 'no login here: offered under「添加资源」');
   const file = join(m.kimiHome, 'credentials/kimi-code.json');
   await mkdir(dirname(file)); await writeFile(file, '{}');
-  assert.deepEqual(await read(), [{ type: 'card', title: '登月者0448', subtitle: 'Allegretto', items: [
+  assert.deepEqual(await read(), [{ type: 'card', title: '登月者0448', subtitle: 'Allegretto', identity: 'kimi:u1', items: [
     { type: 'meter', label: '5 小时', value: '剩余 75%', fraction: 0.75, time: '2026-10-13T05:00:00.000Z', timeLabel: '重置' },
     { type: 'meter', label: 'Extra Usage 余额', value: '剩余 16%', fraction: 0.16 }] }]);
   await read();
   assert.equal((await m.requests()).filter(r => r.url === '/api/v1/oauth/userinfo').length, 1, 'not asked again while the login stays as it was');
   const touch = async offset => utimes(file, new Date(), new Date(Date.now() + offset));
-  // Kimi not saying who it is keeps the account seen last; a login it refuses shows nothing.
+  // Kimi not saying who it is keeps the name seen last, but not the identity: the login changed, and the quota is of
+  // whoever it is now. A login it refuses shows nothing.
   await m.setMode('nameless'); await touch(5000);
-  assert.equal((await read())[0].title, '登月者0448');
+  const nameless = (await read())[0];
+  assert.equal(nameless.title, '登月者0448');
+  assert.equal(nameless.identity, undefined);
   await m.setMode('expired'); await touch(10000);
   assert.deepEqual((await read())[0].items, [{ type: 'error', text: '暂时无法获取额度：Kimi 没有给出额度' }]);
   await m.setMode('signed-out'); await touch(15000);
