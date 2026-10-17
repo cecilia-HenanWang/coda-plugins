@@ -126,12 +126,9 @@ export const DEPTH = 2;
 // `npm ci` in the plugin's version directory.
 export const NPM = ['dependencies', 'optionalDependencies'];
 export const NPM_LOCK = 'package-lock.json';
-// The plugins Coda ships (backend/src/resources/plugins/): one from a repository may not take their names.
-export const BUILTIN_PLUGINS = ['approve-command', 'claude', 'cliproxy', 'codex', 'codex-accounts', 'develop', 'grok', 'host', 'human-check',
-  'kimi', 'maintenance', 'opencode', 'review', 'secrets', 'testbed'];
 // Those whose copies in Coda are taken from `plugins/<id>` of this repository (backend/src/resources/plugins.lock.json): a
-// version from the same repository and directory may be installed over a copy, and only that one may take their names
-// (builtinProblem; GitHub's repository by owner and name in any case, over any transport).
+// version from the same repository and directory may be installed over a copy. Other sources may use the same ID once
+// the built-in plugin is uninstalled; only the target backend can check its installed state (builtinProblem).
 export const BUILTIN_HERE = ['claude', 'codex', 'codex-accounts', 'grok', 'kimi', 'opencode'];
 export const BUILTIN_REPOSITORY = /(^|[/:])coda-console\/coda-plugins(\.git)?\/?$/i;
 // An agent, a concurrency group and a command are one plugin's (catalogProblem, claims). Those the built-in plugins declare, by

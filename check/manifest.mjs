@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_PLUGINS, BUILTIN_REPOSITORY, CAPABILITY,
+import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_REPOSITORY, CAPABILITY,
   CODA_COMMANDS, COMMAND, COMMAND_LIMIT, CONTRIBUTES, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
   SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT } from './coda.mjs';
 
@@ -245,8 +245,6 @@ export function checkManifest(dir, say) {
   const own = BUILTIN_HERE.includes(manifest.name) && path?.join('/') === `plugins/${manifest.name}` && remotes(top).some(url => BUILTIN_REPOSITORY.test(url));
   const id = part('manifest.name', () => {
     check(typeof manifest.name === 'string' && PLUGIN_ID.test(manifest.name), 'package.json 的 name 只能用小写字母、数字和「-」，以字母开头，至多 40 个字符');
-    check(own || !BUILTIN_PLUGINS.includes(manifest.name), `name ${manifest.name} 与 Coda 的内置插件同名，从仓库装不了${BUILTIN_HERE.includes(manifest.name)
-      ? `（只有 coda-console/coda-plugins 的 plugins/${manifest.name}，即 Coda 内置副本的来源，能装同名的新版本）` : ''}`);
     return manifest.name;
   }, name => `package.json 能读，插件 ID ${name}${own ? `（Coda 内置插件 ${name} 自己的来源：从这里装的新版本盖过 Coda 的内置副本）` : ''}`);
   const contributes = part('manifest.contributes', () => {
@@ -336,9 +334,10 @@ export function checkManifest(dir, say) {
       const declared = part('manifest.agents', () => agent(raw, `contributes.agents[${i}]`, dir));
       if (!declared) return;
       if (agents.some(a => a.id === declared.id)) { say.fail('manifest.agents', 'contributes.agents 里有重复的 id'); return; }
-      // A built-in plugin from its own source declares its own agents again; the old Claude ID stays nobody's.
+      // A version or replacement of a built-in plugin may declare its agents; installation checks whether the name is free.
+      // The old Claude ID stays nobody's.
       const owner = BUILTIN_AGENTS[declared.id];
-      if (owner && (declared.id === 'claude' || !own || owner !== name)) say.fail('manifest.agent-id', declared.id === 'claude'
+      if (owner && (declared.id === 'claude' || owner !== name)) say.fail('manifest.agent-id', declared.id === 'claude'
         ? 'Agent ID claude 是 Coda 早先的 Claude 会话存的 ID：Coda 的读取来源不拦它，但装上会接管那些旧会话，换一个 ID'
         : `Agent ${declared.id} 已由内置插件 ${owner} 声明，换一个 ID`);
       agents.push(declared);
