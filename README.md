@@ -121,6 +121,15 @@ Codex 的原生失败统一以 ACP 错误结束，包括只有 `turn/completed.f
 明确的额度耗尽、认证、上下文限制、参数、配置或沙箱错误不带此标记。
 插件不做退避或重新发送；Coda 按通用协议统一退避，客户端只支持 ACP 时仍能读到完整错误。
 
+Codex 的 `usageLimitExceeded` 另报 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`，保留原始原因与错误数据；
+即使只有终结失败通知而没有单独的错误事件，也按额度不足报告。
+
+Claude SDK 的额度错误可能先以带 `error` 的 assistant 消息给出，再以 `subtype: "success"`、`is_error: true` 结束。
+插件识别其中明确的订阅额度耗尽（例如 `You've hit your weekly limit`）和余额不足原因，等 SDK 的终结结果后，
+通过同一个 `quota_exhausted` 类别返回；保留完整原因与上游重置时间，不把该错误重复作为正常回复或标题素材。
+只有终结错误而没有 assistant 消息时，也识别明确的额度原因。普通回复、认证错误、短时限流、支付配置问题和额度看板事件
+都不据此归类；已恢复的错误、子 Agent 的错误与上一轮的错误不带到当前主会话的失败中。自主轮次没有请求回执，仍在会话中保留原因。
+
 Kimi 2.1.1 会把五小时额度耗尽（`403 You've reached your 5-hour usage limit.`）误报为 ACP `auth_required`。
 Kimi 插件在 `session/prompt` 的回执中将这条已知错误改为普通执行错误（-32603），在标准 `error.message` 中保留服务端完整原因，
 同时按[执行失败协议](docs/agent-protocol.md#执行失败)报告 `error.data._meta.coda.failure: {kind: "quota_exhausted"}`。

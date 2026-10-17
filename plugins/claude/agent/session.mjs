@@ -10,6 +10,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSessionLimits } from './limits.mjs';
+import { claudeQuotaFailure } from './errors.mjs';
 import { sdkEnvironment } from './auth.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
@@ -251,6 +252,7 @@ export class ClaudeSession {
     switch (m.subtype) {
       case 'init': {
         if (m.session_id !== this.sessionId) return;
+        this.assistantError = null;
         this.terminal = m.terminal_slash_commands ?? [];
         // Its effort is the one applied, the model's own included: what was chosen stays what it was.
         this.current = { ...this.current, model: reportedModel(this.models, this.current.model, m.model), mode: m.permissionMode ?? this.current.mode };
@@ -345,6 +347,12 @@ export class ClaudeSession {
   }
   assistant(m, parent) {
     const sessionId = parent ?? this.sessionId, apiId = m.message?.id, blocks = this.streamed.get(apiId);
+    if (!parent) {
+      this.assistantError = m.error ? { reason: text(m.message?.content), type: m.error } : null;
+      // The terminal result will carry this as an execution failure. Do not add it to the answer or the title as prose.
+      // Autonomous turns have no prompt response to fail, so keep their explanation in the transcript.
+      if (this.prompts.size && this.assistantError && claudeQuotaFailure(this.assistantError.reason, m.error)) return;
+    }
     if (parent) this.waits.model(parent, m.message?.model);
     for (const block of m.message?.content ?? []) {
       if (block.type === 'tool_use') {
@@ -372,23 +380,30 @@ export class ClaudeSession {
     }
   }
   result(m) {
+    const reported = this.assistantError; this.assistantError = null;
     const usage = m.usage ?? {}, windows = Object.values(m.modelUsage ?? {});
     this.update(this.sessionId, { sessionUpdate: 'usage_update', used: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
       size: Math.max(0, ...windows.map(w => w.contextWindow ?? 0)), cost: { amount: m.total_cost_usd ?? 0, currency: 'USD' } });
     const ids = m.user_message_uuids ?? (m.user_message_uuid ? [m.user_message_uuid] : []), id = ids.find(id => this.prompts.has(id));
     const cancelled = interrupted(m), failed = !cancelled && (m.is_error || m.subtype !== 'success');
+    let error;
+    if (failed) {
+      const reason = errorText(m), quota = reported ? claudeQuotaFailure(reported.reason, reported.type) : claudeQuotaFailure(reason);
+      const message = quota && reported?.reason && !reason.includes(reported.reason) ? `${reported.reason}\n\n${reason}` : reason;
+      error = new RequestError(-32603, message, quota ? { _meta: { coda: { failure: quota } } } : undefined);
+    }
     if (id) {
       const prompt = this.prompts.get(id); this.prompts.delete(id);
       // What ended before this turn ended was taken in by it.
       this.waits.settled();
-      if (failed) prompt.reject(failure(errorText(m))); else prompt.resolve({ stopReason: cancelled ? 'cancelled' : 'end_turn' });
+      if (failed) prompt.reject(error); else prompt.resolve({ stopReason: cancelled ? 'cancelled' : 'end_turn' });
     } else if (this.waits.handling) {
       // A turn of Claude's own has no reply to fail: what went wrong is said in it.
-      if (failed) this.chunk(this.sessionId, 'text', m.uuid, errorText(m));
+      if (failed) this.chunk(this.sessionId, 'text', m.uuid, error.message);
       this.waits.finished();
     } else if (failed && this.prompts.size) {
       // A failure of the session itself names no input: none of those given can be said to have run.
-      for (const prompt of this.prompts.values()) prompt.reject(failure(errorText(m)));
+      for (const prompt of this.prompts.values()) prompt.reject(error);
       this.prompts.clear();
     }
     void this.title?.refresh(!failed && !cancelled);

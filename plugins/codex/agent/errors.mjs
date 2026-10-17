@@ -17,10 +17,12 @@ export function explainCodexError(message) {
 export function codexFailureData(error, input) {
   const data = error.data && typeof error.data === 'object' && !Array.isArray(error.data) ? error.data : {};
   const info = data.codexErrorInfo;
+  if (info === 'usageLimitExceeded') return { ...data,
+    _meta: { ...data._meta, coda: { ...data._meta?.coda, failure: { kind: 'quota_exhausted' } } } };
   const message = typeof data.message === 'string' ? data.message : typeof data.details === 'string' ? data.details : typeof error.data === 'string' ? error.data : error.message;
   let provider; try { provider = JSON.parse(message); } catch {}
   const status = provider?.status ?? (info && typeof info === 'object' ? Object.values(info)[0]?.httpStatusCode : null);
-  const permanent = ['usageLimitExceeded', 'unauthorized', 'contextWindowExceeded', 'sessionBudgetExceeded',
+  const permanent = ['unauthorized', 'contextWindowExceeded', 'sessionBudgetExceeded',
     'cyberPolicy', 'misalignmentPolicyViolation', 'sandboxError', 'threadRollbackFailed'].includes(info) || [401, 403].includes(status);
   const unavailableModel = provider?.type === 'error' && status === 400 && provider.error?.type === 'invalid_request_error' &&
     /^model ['"][^'"\r\n]+['"] is not enabled in rustponsesapi\.?$/.test(provider.error.message ?? '');

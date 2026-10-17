@@ -173,6 +173,101 @@ test('streamed text is said as it streams, and the complete message adds only wh
     { sessionUpdate: 'tool_call_update', toolCallId: 'read-1', status: 'completed', rawOutput: { file: '/x' }, content: [{ type: 'content', content: { type: 'text', text: '内容' } }] }]);
 });
 
+// Drive the SDK's actual API-error shape: an assistant error, then a terminal result whose subtype can still be success.
+// Holding that result verifies that the adapter does not finish a prompt while the SDK is still running.
+async function pendingApiError(t) {
+  const c = await setup(t); await c.open();
+  const respond = c.query.respond;
+  c.query.respond = async input => { c.query.init(); c.query.inputId = input.uuid; };
+  const pending = c.prompt('quota check');
+  await until(() => c.query.inputId);
+  c.query.respond = respond;
+  const assistant = (reason, error = 'rate_limit', extra = {}) => ({ type: 'assistant', error,
+    message: { id: 'api-error', content: [{ type: 'text', text: reason }] }, ...extra });
+  const result = extra => ({ type: 'result', subtype: 'success', is_error: true, user_message_uuid: c.query.inputId, ...extra });
+  return { c, pending, assistant, result };
+}
+
+const weeklyLimit = "You've hit your weekly limit · resets 10pm (Asia/Singapore)";
+for (const [reason, type] of [[weeklyLimit, 'rate_limit'], ['Credit balance is too low', 'billing_error']])
+test(`Claude returns ${type} quota exhaustion through ACP after the SDK result, with no duplicate answer`, async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  let finished = false; pending.then(() => { finished = true; });
+  await c.emit(assistant(reason, type));
+  assert.equal(finished, false);
+  assert.deepEqual(c.said(), []);
+  await c.emit(result({ result: reason }));
+  const reply = await pending;
+  assert.equal(reply.result, undefined);
+  assert.equal(reply.error.code, -32603);
+  assert.equal(reply.error.message, reason);
+  assert.deepEqual(reply.error.data._meta.coda.failure, { kind: 'quota_exhausted' });
+  assert.deepEqual(c.said(), []);
+  assert.equal((await c.prompt('recovered')).result.stopReason, 'end_turn');
+  assert.deepEqual(c.said(), ['recovered']);
+});
+
+test('Claude keeps the quota reason when a terminal error only reports a generic execution failure', async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  await c.emit(assistant(weeklyLimit), result({ subtype: 'error_during_execution', errors: ['Request failed'] }));
+  const { error } = await pending;
+  assert.equal(error.message, `${weeklyLimit}\n\nRequest failed`);
+  assert.equal(error.data._meta.coda.failure.kind, 'quota_exhausted');
+});
+
+test('Claude classifies an explicit terminal-only quota error even without an input UUID', async t => {
+  const { c, pending, result } = await pendingApiError(t);
+  await c.emit(result({ user_message_uuid: undefined, subtype: 'error_during_execution', errors: [weeklyLimit] }));
+  const { error } = await pending;
+  assert.equal(error.message, weeklyLimit);
+  assert.equal(error.data._meta.coda.failure.kind, 'quota_exhausted');
+});
+
+for (const [type, reason] of [['rate_limit', '429 Too many requests'], ['authentication_failed', '401 Unauthorized'],
+  ['authentication_failed', weeklyLimit], ['billing_error', 'Payment method declined']])
+test(`Claude does not label ${type}: ${reason} as quota exhaustion`, async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  await c.emit(assistant(reason, type), result({ result: reason }));
+  const { error } = await pending;
+  assert.equal(error.code, -32603);
+  assert.equal(error.message, reason);
+  assert.equal(error.data?._meta?.coda?.failure, undefined);
+});
+
+test('Claude does not use a quota warning, normal answer or child error to fail a successful parent turn', async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  await c.emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', utilization: 1 } },
+    assistant(weeklyLimit, 'rate_limit', { parent_tool_use_id: 'child' }), assistant(weeklyLimit, null),
+    result({ is_error: false, result: weeklyLimit }));
+  assert.deepEqual((await pending).result, { stopReason: 'end_turn' });
+  assert.deepEqual(c.said(), [weeklyLimit]);
+});
+
+for (const source of ['child', 'panel']) test(`a ${source} quota event does not classify an unrelated parent failure`, async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  await c.emit(source === 'child' ? assistant(weeklyLimit, 'rate_limit', { parent_tool_use_id: 'child' })
+    : { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', utilization: 1 } },
+    result({ result: 'Internal error' }));
+  const { error } = await pending;
+  assert.equal(error.message, 'Internal error');
+  assert.equal(error.data?._meta?.coda?.failure, undefined);
+});
+
+test('a recovered SDK error does not classify a later unrelated failure in the same turn', async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  await c.emit(assistant(weeklyLimit), assistant('Recovered', null), result({ result: 'Invalid tool arguments' }));
+  const { error } = await pending;
+  assert.equal(error.message, 'Invalid tool arguments');
+  assert.equal(error.data?._meta?.coda?.failure, undefined);
+});
+
+test('cancellation wins over a preceding quota message, and its classification does not leak to the next turn', async t => {
+  const { c, pending, assistant, result } = await pendingApiError(t);
+  await c.emit(assistant(weeklyLimit), result({ result: weeklyLimit, stop_reason: 'interrupt' }));
+  assert.deepEqual((await pending).result, { stopReason: 'cancelled' });
+  assert.deepEqual((await c.prompt('next turn')).result, { stopReason: 'end_turn' });
+});
+
 test('a background command is waited on from its start; it ends as a turn takes in its end, or as the session goes idle', async t => {
   const c = await setup(t); await c.open();
   await c.prompt('background');

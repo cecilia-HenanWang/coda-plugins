@@ -16,11 +16,21 @@ test('native service failures expose facts; quota, authentication and bad reques
     data: { codexErrorInfo: info, message } }, 'accepted')._meta?.coda?.failure;
   for (const info of ['internalServerError', 'serverOverloaded', { responseStreamDisconnected: { httpStatusCode: 502 } },
     { responseTooManyFailedAttempts: { httpStatusCode: null } }]) assert.deepEqual(classify(info), { kind: 'service_unavailable', input: 'accepted' });
-  for (const info of ['usageLimitExceeded', 'unauthorized', 'contextWindowExceeded', 'sessionBudgetExceeded', 'badRequest',
-    'sandboxError', 'threadRollbackFailed', 'cyberPolicy', { httpConnectionFailed: { httpStatusCode: 401 } }]) assert.equal(classify(info), undefined);
+  assert.deepEqual(classify('usageLimitExceeded'), { kind: 'quota_exhausted' });
+  for (const info of ['unauthorized', 'contextWindowExceeded', 'sessionBudgetExceeded', 'badRequest',
+    'sandboxError', 'threadRollbackFailed', 'cyberPolicy', ...[401, 403, 429].map(httpStatusCode => ({ httpConnectionFailed: { httpStatusCode } }))]) assert.equal(classify(info), undefined);
   assert.equal(codexFailureData({ code: -32603, message: 'Internal error', data: 'Usage limit reached' }, 'not_accepted')._meta, undefined);
   assert.deepEqual(codexFailureData({ code: -32603, message: 'Internal error' }, 'not_accepted')._meta.coda.failure,
     { kind: 'service_unavailable', input: 'not_accepted' });
+});
+
+test('quota classification preserves the provider reason and metadata, replacing a stale retry classification', () => {
+  const data = { codexErrorInfo: 'usageLimitExceeded', message: 'Usage limit reached; try again tomorrow.', additionalDetails: 'kept',
+    _meta: { trace: 'kept', coda: { extra: true, failure: { kind: 'service_unavailable', input: 'accepted' } } } };
+  const before = structuredClone(data), classified = codexFailureData({ code: -32603, message: 'Internal error', data }, 'accepted');
+  assert.deepEqual(classified, { ...data, _meta: { trace: 'kept', coda: { extra: true, failure: { kind: 'quota_exhausted' } } } });
+  assert.deepEqual(data, before);
+  assert.deepEqual(codexFailureData({ data: classified }, 'not_accepted'), classified);
 });
 
 test('the native error patch is tied to the locked adapter', async () => {
@@ -77,7 +87,8 @@ for (const [name, env, input] of [
   ['model unavailable', { FAKE_CODEX_MODEL_ERROR: 'badRequest' }, 'accepted'],
   ['failed completion without an error notification', { FAKE_CODEX_MODEL_ERROR: 'internalServerError', FAKE_CODEX_MODEL_MESSAGE: 'Internal error', FAKE_CODEX_TERMINAL_ONLY: '1' }, 'accepted'],
   ['rejected turn start', { FAKE_CODEX_RPC_ERROR_METHOD: 'turn/start', FAKE_CODEX_RPC_ERROR: 'Internal error' }, 'not_accepted'],
-  ['quota exhausted', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded' }, null],
+  ['quota exhausted', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded', FAKE_CODEX_MODEL_MESSAGE: 'Usage limit reached; resets tomorrow.' }, 'quota'],
+  ['quota exhausted without an error notification', { FAKE_CODEX_MODEL_ERROR: 'usageLimitExceeded', FAKE_CODEX_MODEL_MESSAGE: 'Usage limit reached; resets tomorrow.', FAKE_CODEX_TERMINAL_ONLY: '1' }, 'quota'],
   ['authentication failed', { FAKE_CODEX_MODEL_ERROR: 'unauthorized' }, null],
   ['invalid arguments', { FAKE_CODEX_MODEL_ERROR: 'badRequest', FAKE_CODEX_MODEL_MESSAGE: 'Invalid tool arguments' }, null],
 ]) test(`Codex reports ${name} for Coda to classify without retrying in the plugin`, async t => {
@@ -92,6 +103,10 @@ for (const [name, env, input] of [
   assert.equal(session.error, undefined);
   const reply = await request('session/prompt', { sessionId: session.result.sessionId, prompt: [{ type: 'text', text: 'original task' }] });
   assert.ok(reply.error, JSON.stringify(reply));
-  assert.deepEqual(reply.error.data?._meta?.coda?.failure, input ? { kind: 'service_unavailable', input } : undefined);
+  assert.deepEqual(reply.error.data?._meta?.coda?.failure, input === 'quota' ? { kind: 'quota_exhausted' } : input ? { kind: 'service_unavailable', input } : undefined);
+  if (input === 'quota') {
+    assert.equal(reply.error.code, -32603);
+    assert.ok(reply.error.message.includes(env.FAKE_CODEX_MODEL_MESSAGE));
+  }
   assert.equal((await readFile(join(root, 'prompts.ndjson'), 'utf8')).trim().split('\n').length, 1);
 });
