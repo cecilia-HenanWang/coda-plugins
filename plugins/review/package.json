@@ -1,0 +1,83 @@
+{
+  "name": "review",
+  "displayName": "PR 生命流程",
+  "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，合并后按你的选择调用项目的部署、发布流程，PR 合并或关闭时结束。",
+  "version": "2.0.0",
+  "contributes": {
+    "configuration": {
+      "title": "PR 生命流程",
+      "properties": {
+        "review.reviewers": {
+          "title": "评审组合",
+          "type": "object",
+          "order": 1,
+          "description": "一行是一类作者和评审它的 Agent。作者只选到哪一级，就只按那一级区分；越具体的一行越优先。",
+          "propertyNames": {
+            "format": "coda-agent-match"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "format": "coda-agent"
+          },
+          "default": {
+            "claude-sdk": {
+              "agent": "codex",
+              "mode": "agent"
+            },
+            "codex": {
+              "agent": "claude-sdk",
+              "mode": "auto"
+            },
+            "kimi": {
+              "agent": "codex",
+              "mode": "agent"
+            },
+            "grok": {
+              "agent": "codex",
+              "mode": "agent"
+            },
+            "opencode": {
+              "agent": "claude-sdk",
+              "mode": "auto"
+            }
+          }
+        },
+        "review.blockingSeverity": {
+          "title": "阻塞级别",
+          "type": "string",
+          "order": 2,
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ],
+          "default": "P2",
+          "description": "这一级及更严重的问题要求修改：交给开 PR 的会话处理，它不同意时交给你仲裁。更轻的问题不挡住 PR，评审仍算通过，写在 PR 评论和批准卡上。P0 最严重，P3 最轻。"
+        },
+        "review.maxReviews": {
+          "title": "每个 PR 最多自动评审",
+          "type": "integer",
+          "order": 3,
+          "minimum": 1,
+          "maximum": 100,
+          "default": 3,
+          "description": "一条运行里最多自动评审几次。到了上限，新版本交给你决定：放行，或再评审一次。手动发起不计次数。"
+        },
+        "review.mergeMethod": {
+          "title": "合并方式",
+          "type": "string",
+          "order": 4,
+          "enum": [
+            "squash",
+            "merge",
+            "rebase"
+          ],
+          "default": "squash",
+          "description": "你批准合并后，用哪种 GitHub 合并方式：squash 把 PR 压成一个提交，merge 留下合并提交，rebase 把提交逐个接到目标分支上。目标分支要求合并队列时按队列自己的设定。"
+        }
+      }
+    },
+    "instructions": "PR 默认草稿（gh pr create 自动加 --draft）。改动与描述可评审时执行 gh pr ready <号>，可与验证并行；合并的前置验证通过流程步骤或 GitHub 必需检查声明。PR 流程正常结束只更新状态；需要处理的任务与失败会主动送到本会话，不要后台轮询 PR。提前要意见用 workflow_run 手动发起 pull-request，手动评审会交回结论。"
+  }
+}
