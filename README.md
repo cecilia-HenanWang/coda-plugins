@@ -1,6 +1,6 @@
 # Coda 插件
 
-Coda 的公开插件仓库，和给插件作者用的契约检查。Coda 自带的 Agent 插件（Codex、Claude、Kimi、Grok、OpenCode 与 Codex 多账号）也在这里维护。
+Coda 的公开插件仓库，和给插件作者用的契约检查。Coda 自带的 Agent 插件（Codex、Claude、Kimi、Grok、OpenCode 与 Codex 多账号）和 PR 生命流程也在这里维护。
 
 Coda 是一个多 Agent 客户端（Mac、iPhone 与运行在你机器上的后端）。Agent 与资源页的面板都以插件接入：
 插件是一个目录，清单就是它的 `package.json`（`contributes.agents`、`contributes.panels` 等，照 VS Code 扩展的写法）；
@@ -14,6 +14,7 @@ plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配�
 plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
+plugins/review/          PR 生命流程：会话开的 PR 先跑项目的检查、再交叉评审，你批准后合并、部署与发布；也是写 PR 流程的样例
 templates/agent/         最小的 Agent 插件：手写 ACP 的回声 Agent，演示会话指令、插话、Agent 活动与自主轮次
 templates/panel/         最小的面板插件：一张卡片、一条进度条、一个按钮
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
@@ -23,7 +24,7 @@ docs/agent-protocol.md   Coda 接入协议正文的公开副本
 
 ## Coda 自带的插件
 
-`codex`、`claude`、`kimi`、`grok`、`opencode`、`codex-accounts` 是 Coda 内置的插件，源码从此在这里维护。
+`codex`、`claude`、`kimi`、`grok`、`opencode`、`codex-accounts`、`review` 是 Coda 内置的插件，源码从此在这里维护。
 Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提交的只读副本**：Coda 的同步脚本按它的锁文件
 （记着本仓库的提交与每个目录的树哈希）把那个提交里的 `plugins/<id>` 原样复制过去，新机器、离线首启都带着它们。
 
@@ -32,6 +33,7 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
   CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
 - Coda 的「检查更新」可以从这里装同一插件的新提交，盖过内置副本；只有本仓库的 `plugins/<id>` 这个来源能用这些名字。
 - 测的是插件自己代码的用例在 `test/plugins/<id>/`；把 Coda 与入口合在一起测的（启动 Coda 后端、写进 Coda 的存储）留在 Coda，对副本跑。
+  `review` 是一个流程，要 Coda 的流程引擎才跑得起来，它的用例都在 Coda。
 
 | 插件 | npm 依赖（与 Coda 后端同版本） | 运行机上另要 |
 | --- | --- | --- |

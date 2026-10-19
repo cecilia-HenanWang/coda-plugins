@@ -1,0 +1,485 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PR 生命流程（docs/plugins.md「内置插件：PR 生命流程」）：会话开的 PR 从开出来起一条运行，走到合并或关闭才结束。
+     草稿：等作者标记为可评审。
+     检查：在这个提交上调用项目声明为检查的流程（coda:kind="check"），再等它在 GitHub 上的检查都有结果；有没通过的交给开 PR 的会话。
+     评审：另一家 Agent 评审这个版本；要求修改交给开 PR 的会话，它不同意交给你仲裁。有新提交就从头再来。
+     叠放：base 不是默认分支的不合并，等 base 改过去再接着走。
+     合并：请你批准；GitHub 没合并就交给开 PR 的会话，它推了新提交、评审通过后按你的批准合并，不再问。
+     部署与发布：合并后按你勾选的，在合并提交上调用项目里声明为这一类的流程（coda:kind）。
+     PR 在 GitHub 上合并或关闭，运行随之结束。也可以手动发起（传 PR 编号或地址），只评审一次。BPMN 2.0，由 Coda 执行（docs/workflows.md）。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="pull-request-definitions" targetNamespace="https://coda.pub/plugins/review">
+  <message id="dispatch" name="workflow.dispatch" />
+  <message id="opened" name="pull_request.opened" />
+  <message id="synchronize" name="pull_request.synchronize" />
+  <message id="ready" name="pull_request.ready_for_review" />
+  <message id="edited" name="pull_request.edited" />
+  <message id="closed" name="pull_request.closed" />
+  <process id="pull-request" name="PR 生命流程" isExecutable="true"
+    coda:title="PR #{{github.event.number}}{{inputs.pr}} {{github.event.pull_request.title}}">
+    <extensionElements>
+      <coda:input name="pr" label="PR" description="PR 编号或地址；不填就评审会话最近开的 PR" required="true" defaultFrom="session.pullRequest" />
+      <coda:input name="focus" label="关注点" description="请评审方特别关注的内容" />
+    </extensionElements>
+    <startEvent id="new" name="PR 新建"><messageEventDefinition messageRef="opened" /></startEvent>
+    <startEvent id="pushed" name="PR 有新提交"><messageEventDefinition messageRef="synchronize" /></startEvent>
+    <startEvent id="asked" name="手动发起"><messageEventDefinition messageRef="dispatch" /></startEvent>
+    <sequenceFlow id="new-open" sourceRef="new" targetRef="opening" />
+    <sequenceFlow id="pushed-open" sourceRef="pushed" targetRef="opening" />
+    <sequenceFlow id="asked-review" sourceRef="asked" targetRef="reviewing" />
+
+    <!-- 每次有了新版本都从这里重新看：草稿等作者，不是草稿就先等检查、再评审。 -->
+    <exclusiveGateway id="opening" name="草稿吗" default="to-checking" />
+    <sequenceFlow id="to-drafting" sourceRef="opening" targetRef="drafting">
+      <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.draft</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-checking" sourceRef="opening" targetRef="checking" />
+
+    <subProcess id="drafting" name="草稿" coda:optional="true" coda:status="草稿，等作者标记为可评审">
+      <startEvent id="drafting-in" />
+      <sequenceFlow id="dr-in" sourceRef="drafting-in" targetRef="marked" />
+      <receiveTask id="marked" name="等标记为可评审" messageRef="ready" />
+      <sequenceFlow id="dr-out" sourceRef="marked" targetRef="drafting-out" />
+      <endEvent id="drafting-out" />
+    </subProcess>
+    <sequenceFlow id="undrafted" sourceRef="drafting" targetRef="opening" />
+    <boundaryEvent id="pushed-while-drafted" name="新提交" attachedToRef="drafting"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
+    <sequenceFlow id="drafted-pushed" sourceRef="pushed-while-drafted" targetRef="opening" />
+    <boundaryEvent id="closed-while-drafted" name="PR 关闭" attachedToRef="drafting"><messageEventDefinition messageRef="closed" /></boundaryEvent>
+    <sequenceFlow id="drafted-closed" sourceRef="closed-while-drafted" targetRef="ended" />
+
+    <!-- 检查：机器检查便宜，先过了它们再请 Agent 评审。项目在自己的仓库里声明哪些流程是检查（coda:kind="check"）：这里在这个提交上调用它们，
+         一个没通过（运行失败）就交给开 PR 的会话；都通过了，再等这个提交在 GitHub 上的全部检查（项目检查写的状态、GitHub Actions 等）有结果，
+         它们的一句话结论交给评审方、写在批准卡上。会话推新提交就从头再来；重跑外部检查或处理好别的后答复，再跑一遍。 -->
+    <subProcess id="checking" name="检查">
+      <startEvent id="checking-in" />
+      <sequenceFlow id="c-in" sourceRef="checking-in" targetRef="run-checks" />
+      <serviceTask id="run-checks" name="跑项目的检查" coda:action="run-workflows" coda:status="跑项目的检查">
+        <extensionElements>
+          <coda:param name="kind" value="check" />
+          <coda:param name="commit" value="=github.event.pull_request.head.sha" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="to-checks" sourceRef="run-checks" targetRef="checks" />
+      <boundaryEvent id="checks-broke" name="没通过" attachedToRef="run-checks"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="broke-to-fix" sourceRef="checks-broke" targetRef="fix-checks" />
+      <scriptTask id="checks" name="等 GitHub 检查" coda:timeout="60" coda:checkout="false" coda:status="等 GitHub 检查" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="URL" value="=github.event.pull_request.html_url" />
+          <coda:env name="EVERY" value="10" />
+          <coda:output name="passed" />
+          <coda:output name="lines" />
+        </extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/checks.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="to-checked" sourceRef="checks" targetRef="checked" />
+      <exclusiveGateway id="checked" name="都过了吗" default="checks-passed" />
+      <sequenceFlow id="checks-failed" sourceRef="checked" targetRef="fix-checks">
+        <conditionExpression xsi:type="tFormalExpression">=not(checks.passed)</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="checks-passed" sourceRef="checked" targetRef="checking-out" />
+      <userTask id="fix-checks" name="检查没通过：处理后答复" coda:status="检查没通过：开 PR 的会话处理中" coda:completeLabel="已处理，再跑检查" coda:rejectLabel="处理不了">
+        <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）的检查没通过。没通过的项目检查列在这次运行页的「调用的流程」里（运行 {{run.id}}）；
+GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 查看。
+
+请查明原因。是这次改动导致的就修改、验证并推送新版本（新版本会重新检查、评审），不必答复这个任务；检查本身出了问题（偶发、机器离线），处理好后答复 completed，项目的检查会再跑一遍，GitHub 上的其他检查要你自己重跑。做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+      </userTask>
+      <sequenceFlow id="run-again" sourceRef="fix-checks" targetRef="run-checks" />
+      <boundaryEvent id="checks-stuck" name="做不了" attachedToRef="fix-checks"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="to-checks-user" sourceRef="checks-stuck" targetRef="checks-user" />
+      <userTask id="checks-user" name="检查没通过：等你处理" coda:assignee="user" coda:handback="false" coda:status="检查没通过：等你处理" coda:completeLabel="再跑检查" coda:rejectLabel="不再等">
+        <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）的检查没通过，开 PR 的会话处理不了，理由在这次运行的「检查没通过：处理后答复」任务里；
+没通过的项目检查见运行页「调用的流程」，GitHub 上的检查见 PR 页面。
+
+处理好后选「再跑检查」；推送新提交也会从头再来。</documentation>
+      </userTask>
+      <sequenceFlow id="run-again-by-user" sourceRef="checks-user" targetRef="run-checks" />
+      <endEvent id="checking-out" />
+    </subProcess>
+    <boundaryEvent id="pushed-while-checking" name="新提交" attachedToRef="checking"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
+    <sequenceFlow id="checking-pushed" sourceRef="pushed-while-checking" targetRef="opening" />
+    <boundaryEvent id="closed-while-checking" name="PR 关闭" attachedToRef="checking"><messageEventDefinition messageRef="closed" /></boundaryEvent>
+    <sequenceFlow id="checking-closed" sourceRef="closed-while-checking" targetRef="ended" />
+    <sequenceFlow id="to-reviewing" sourceRef="checking" targetRef="reviewing" />
+
+    <!-- 评审这个版本：同一个提交在同一个 base 上评审通过过就不再评；自动评审到了上限请你决定。结束时 head 是通过的那个提交，合并只合它。 -->
+    <subProcess id="reviewing" name="评审">
+      <startEvent id="reviewing-in" />
+      <sequenceFlow id="r-in" sourceRef="reviewing-in" targetRef="whether" />
+      <exclusiveGateway id="whether" name="评审吗" default="go" />
+      <sequenceFlow id="same" sourceRef="whether" targetRef="passed">
+        <conditionExpression xsi:type="tFormalExpression">=review.passed and review.head = github.event.pull_request.head.sha and review.base = github.event.pull_request.base.ref</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="at-limit" sourceRef="whether" targetRef="limit">
+        <conditionExpression xsi:type="tFormalExpression">=github.event_name != "workflow_dispatch" and number(review.count) >= vars.review.maxReviews</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="go" sourceRef="whether" targetRef="review" />
+
+      <scriptTask id="review" name="交叉评审" coda:audience="user" coda:timeout="120" coda:status="评审中" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="REVIEWERS" value="=vars.review.reviewers" />
+          <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
+          <coda:env name="SESSION" value="=github.event.coda.session" />
+          <coda:env name="PULL_REQUEST" value="=github.event.pull_request" />
+          <coda:env name="PR" value="=inputs.pr" />
+          <coda:env name="FOCUS" value="=inputs.focus" />
+          <coda:env name="CHECKS" value="=checks.lines" />
+          <coda:env name="LAST" value="=review" />
+          <coda:output name="decision" />
+          <coda:output name="passed" />
+          <coda:output name="changes" />
+          <coda:output name="line" />
+          <coda:output name="findings" />
+          <coda:output name="report" />
+          <coda:output name="files" />
+          <coda:output name="pr" />
+          <coda:output name="head" />
+          <coda:output name="base" />
+          <coda:output name="count" />
+          <coda:output name="changesAt" />
+        </extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/review.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="reviewed" sourceRef="review" targetRef="verdict" />
+      <exclusiveGateway id="verdict" name="要求修改吗" default="approved" />
+      <sequenceFlow id="changes" sourceRef="verdict" targetRef="fix">
+        <conditionExpression xsi:type="tFormalExpression">=review.changes</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="approved" sourceRef="verdict" targetRef="passed" />
+
+      <userTask id="limit" name="评审次数已到上限" coda:assignee="user" coda:handback="false" coda:status="评审次数已到上限：等你决定">
+        <documentation>PR #{{github.event.number}} 在这条运行里已自动评审 {{review.count}} 次，到了上限（{{vars.review.maxReviews}} 次）。当前版本 {{github.event.pull_request.head.sha}} 还没评审过。
+
+最近一次评审（提交 {{review.head}}）：{{review.line}}
+
+{{review.findings}}
+
+放行只对当前版本有效，之后的新提交仍会问你。</documentation>
+        <extensionElements>
+          <coda:choice id="release" name="放行当前版本" primary="true" />
+          <coda:choice id="again" name="再评审一次" />
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="decided" sourceRef="limit" targetRef="limit-how" />
+      <exclusiveGateway id="limit-how" name="再评审吗" default="released" />
+      <sequenceFlow id="review-again" sourceRef="limit-how" targetRef="review">
+        <conditionExpression xsi:type="tFormalExpression">=limit.chose.again</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="released" sourceRef="limit-how" targetRef="released-at-limit" />
+
+      <userTask id="fix" name="处理评审意见" coda:status="评审要求修改：处理评审意见" coda:completeLabel="已修改并推送" coda:rejectLabel="不同意评审意见">
+        <documentation>交叉评审要求修改 PR {{review.pr}}，阻塞级别及以上的问题如下（本任务只处理这些问题）：
+
+{{review.findings}}
+
+请独立核实。成立的就修改、验证并推送新版本（新版本会自动重新评审），然后用 completed 答复。不同意的，用 rejected 答复并在 note 里写明理由，交给用户仲裁；用户维持评审意见时这个任务会再交给你。</documentation>
+      </userTask>
+      <sequenceFlow id="fixed" sourceRef="fix" targetRef="fixing" />
+      <boundaryEvent id="disputed" name="不同意" attachedToRef="fix"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="to-arbitrate" sourceRef="disputed" targetRef="arbitrate" />
+      <userTask id="arbitrate" name="仲裁评审意见" coda:assignee="user" coda:handback="false" coda:status="评审意见有分歧：等你仲裁" coda:completeLabel="放行本次评审" coda:rejectLabel="按评审意见修改">
+        <documentation>交叉评审要求修改 PR {{review.pr}}，开 PR 的会话不同意，理由在这次运行的「处理评审意见」任务里。阻塞级别及以上的问题：
+
+{{review.findings}}
+
+放行就接着请你批准合并；按评审意见修改则交回开 PR 的会话。</documentation>
+      </userTask>
+      <sequenceFlow id="arbitrated" sourceRef="arbitrate" targetRef="passed" />
+      <boundaryEvent id="upheld" name="按评审意见修改" attachedToRef="arbitrate"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="back-to-fix" sourceRef="upheld" targetRef="fix" />
+
+      <endEvent id="passed" name="通过">
+        <extensionElements>
+          <coda:output name="outcome" value="passed" />
+          <coda:output name="head" value="=review.head" />
+        </extensionElements>
+      </endEvent>
+      <endEvent id="released-at-limit" name="你放行了">
+        <extensionElements>
+          <coda:output name="outcome" value="passed" />
+          <coda:output name="head" value="=github.event.pull_request.head.sha" />
+        </extensionElements>
+      </endEvent>
+      <endEvent id="fixing" name="等修改"><extensionElements><coda:output name="outcome" value="fixing" /></extensionElements></endEvent>
+    </subProcess>
+    <boundaryEvent id="pushed-while-reviewing" name="新提交" attachedToRef="reviewing"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
+    <sequenceFlow id="review-pushed" sourceRef="pushed-while-reviewing" targetRef="opening" />
+    <boundaryEvent id="closed-while-reviewing" name="PR 关闭" attachedToRef="reviewing"><messageEventDefinition messageRef="closed" /></boundaryEvent>
+    <sequenceFlow id="review-closed" sourceRef="closed-while-reviewing" targetRef="ended" />
+    <sequenceFlow id="to-next" sourceRef="reviewing" targetRef="after-reviewing" />
+    <exclusiveGateway id="after-reviewing" name="接下来" default="to-based" />
+    <sequenceFlow id="by-hand" sourceRef="after-reviewing" targetRef="reviewed-by-hand">
+      <conditionExpression xsi:type="tFormalExpression">=github.event_name = "workflow_dispatch"</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-waiting" sourceRef="after-reviewing" targetRef="waiting">
+      <conditionExpression xsi:type="tFormalExpression">=reviewing.outcome = "fixing"</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-based" sourceRef="after-reviewing" targetRef="based" />
+    <endEvent id="reviewed-by-hand" coda:status='=if review.changes and reviewing.outcome = "passed" then "评审要求修改，你已放行" else review.line' />
+
+    <receiveTask id="waiting" name="等新提交" messageRef="synchronize" coda:status="等新提交" />
+    <sequenceFlow id="waited" sourceRef="waiting" targetRef="opening" />
+    <boundaryEvent id="closed-while-waiting" name="PR 关闭" attachedToRef="waiting"><messageEventDefinition messageRef="closed" /></boundaryEvent>
+    <sequenceFlow id="waiting-closed" sourceRef="closed-while-waiting" targetRef="ended" />
+
+    <!-- 只合并进仓库的默认分支。叠在别的 PR 上的等 base 改过去（仓库开了合并后删分支时，GitHub 在下层合并后自己改），再从头看：base 变了改动就变了，重新评审。 -->
+    <scriptTask id="based" name="看 base" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+      <extensionElements>
+        <coda:env name="URL" value="=github.event.pull_request.html_url" />
+        <coda:output name="stacked" />
+        <coda:output name="base" />
+        <coda:output name="main" />
+      </extensionElements>
+      <script>node "${CODA_PLUGIN_PATH}/scripts/base.mjs"</script>
+    </scriptTask>
+    <sequenceFlow id="to-stacked" sourceRef="based" targetRef="stacked" />
+    <exclusiveGateway id="stacked" name="叠放吗" default="to-merging" />
+    <sequenceFlow id="to-stacking" sourceRef="stacked" targetRef="stacking">
+      <conditionExpression xsi:type="tFormalExpression">=based.stacked</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-merging" sourceRef="stacked" targetRef="merging" />
+    <subProcess id="stacking" name="叠放" coda:optional="true" coda:status="base 是 {{based.base}}，不是 {{based.main}}：等 base 改过去">
+      <startEvent id="stacking-in" />
+      <sequenceFlow id="st-in" sourceRef="stacking-in" targetRef="rebased" />
+      <receiveTask id="rebased" name="等 base 改过去" messageRef="edited" />
+      <sequenceFlow id="st-out" sourceRef="rebased" targetRef="stacking-out" />
+      <endEvent id="stacking-out" />
+    </subProcess>
+    <sequenceFlow id="unstacked" sourceRef="stacking" targetRef="opening" />
+    <boundaryEvent id="pushed-while-stacked" name="新提交" attachedToRef="stacking"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
+    <sequenceFlow id="stacked-pushed" sourceRef="pushed-while-stacked" targetRef="opening" />
+    <boundaryEvent id="closed-while-stacked" name="PR 关闭" attachedToRef="stacking"><messageEventDefinition messageRef="closed" /></boundaryEvent>
+    <sequenceFlow id="stacked-closed" sourceRef="closed-while-stacked" targetRef="ended" />
+
+    <!-- 合并：你批准过、之后只是 GitHub 没合并（冲突等），这个版本评审通过就按原批准合并；评审要求修改过（review.changesAt 晚于批准）就再问你。 -->
+    <subProcess id="merging" name="合并">
+      <startEvent id="merging-in" />
+      <sequenceFlow id="m-in" sourceRef="merging-in" targetRef="standing" />
+      <exclusiveGateway id="standing" name="按原批准合并吗" default="ask" />
+      <sequenceFlow id="as-approved" sourceRef="standing" targetRef="merge">
+        <conditionExpression xsi:type="tFormalExpression">=number(merge.at) > number(review.changesAt)</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="ask" sourceRef="standing" targetRef="approve" />
+
+      <userTask id="approve" name="批准合并" coda:assignee="user" coda:handback="false" coda:status="评审通过：等你批准合并">
+        <documentation>PR #{{github.event.number}} 可以合并。
+
+- **评审**：{{review.line}}
+- **改动**：{{review.files}}
+- **检查**：{{if checks.lines = null or checks.lines = "" then "没有" else checks.lines}}
+- **PR**：{{github.event.pull_request.html_url}}
+
+最近一次评审（提交 {{review.head}}；点「让 Agent 处理评审意见」才交给开 PR 的会话）：
+{{review.report}}
+
+「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}。GitHub 没合并（冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
+        <extensionElements>
+          <coda:choice id="merge" name="合并" primary="true">
+            <coda:option id="deploy" name="部署" detail="调用项目里的部署流程" />
+            <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" />
+            <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" />
+            <coda:option id="notify" name="全部完成后通知 Agent" detail="合并及所选部署、发布结束后通知" />
+          </coda:choice>
+          <coda:choice id="send" name="让 Agent 处理评审意见" />
+          <coda:choice id="close" name="关闭 PR" detail="不合并，在 GitHub 上关闭这个 PR" />
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="to-how" sourceRef="approve" targetRef="how" />
+      <exclusiveGateway id="how" name="合并还是关闭" default="merge-it" />
+      <sequenceFlow id="close-it" sourceRef="how" targetRef="close">
+        <conditionExpression xsi:type="tFormalExpression">=approve.chose.close</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="send-it" sourceRef="how" targetRef="handed">
+        <conditionExpression xsi:type="tFormalExpression">=approve.chose.send</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="merge-it" sourceRef="how" targetRef="merge" />
+
+      <userTask id="handed" name="处理你交付的评审意见" coda:status="处理你交付的评审意见" coda:completeLabel="已处理并推送" coda:rejectLabel="无法处理">
+        <documentation>用户要求处理 PR #{{github.event.number}} 的这份评审（提交 {{review.head}}）：
+
+{{review.report}}
+
+补充要求：{{approve.note}}
+
+请先核实意见在当前版本是否仍成立，再修改、验证并推送，然后答复 completed；新版本会重新评审，再请用户批准。做不了就答复 rejected。</documentation>
+      </userTask>
+      <sequenceFlow id="handled" sourceRef="handed" targetRef="merging-fixing" />
+      <boundaryEvent id="not-handled" name="做不了" attachedToRef="handed"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="back-to-approve" sourceRef="not-handled" targetRef="approve" />
+
+      <scriptTask id="close" name="关闭 PR" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+        <extensionElements><coda:env name="URL" value="=github.event.pull_request.html_url" /></extensionElements>
+        <script>gh pr close "$URL"</script>
+      </scriptTask>
+      <sequenceFlow id="closed-it" sourceRef="close" targetRef="merging-closed" />
+
+      <scriptTask id="merge" name="合并" coda:timeout="10" coda:checkout="false" coda:status="合并中" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="URL" value="=github.event.pull_request.html_url" />
+          <coda:env name="HEAD" value="=reviewing.head" />
+          <coda:env name="METHOD" value="=vars.review.mergeMethod" />
+          <coda:env name="APPROVED" value="=approve" />
+          <coda:output name="merged" />
+          <coda:output name="refused" />
+          <coda:output name="reason" />
+          <coda:output name="at" />
+          <coda:output name="deploy" />
+          <coda:output name="release" />
+          <coda:output name="releaseKinds" />
+          <coda:output name="notify" />
+        </extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/merge.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="to-result" sourceRef="merge" targetRef="result" />
+      <exclusiveGateway id="result" name="合并了吗" default="handed-to-github" />
+      <sequenceFlow id="refused" sourceRef="result" targetRef="unblock">
+        <conditionExpression xsi:type="tFormalExpression">=merge.refused</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="handed-to-github" sourceRef="result" targetRef="merging-merged" />
+
+      <!-- 没有合并：开 PR 的会话推新提交（经评审后按原批准合并），或处理好之后答复重试；它做不了交给你。 -->
+      <userTask id="unblock" name="合并没成功：处理后答复" coda:status="没有合并：开 PR 的会话处理中" coda:completeLabel="已处理，重试合并" coda:rejectLabel="处理不了">
+        <documentation>用户已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但没有合并：{{merge.reason}}
+
+- 与目标分支 {{github.event.pull_request.base.ref}} 有冲突，或要求先合入：把它合入这个 PR 的分支，解决冲突、验证并推送。新提交照常评审，通过后按用户的批准合并，不必答复这个任务。
+- PR 是草稿：确认可以评审后用 `gh pr ready` 标记，再答复 completed 重试合并。
+- 必需的检查还没通过：等它通过后答复 completed 重试；检查失败就修复并推送。
+
+做不了就答复 rejected，在 note 里写明原因，交给用户。</documentation>
+      </userTask>
+      <sequenceFlow id="retry" sourceRef="unblock" targetRef="merge" />
+      <boundaryEvent id="stuck" name="做不了" attachedToRef="unblock"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="to-unblock-user" sourceRef="stuck" targetRef="unblock-user" />
+      <userTask id="unblock-user" name="合并没成功：等你处理" coda:assignee="user" coda:handback="false" coda:status="没有合并：等你处理">
+        <documentation>你已批准合并 PR #{{github.event.number}}（{{github.event.pull_request.html_url}}），但没有合并：{{merge.reason}}
+
+开 PR 的会话处理不了，理由在这次运行的「合并没成功：处理后答复」任务里。在 GitHub 上处理好后选「重试合并」；推送新提交也会接着评审、按你的批准合并。</documentation>
+        <extensionElements>
+          <coda:choice id="retry" name="重试合并" primary="true" />
+          <coda:choice id="close" name="关闭 PR" detail="不合并，在 GitHub 上关闭这个 PR" />
+        </extensionElements>
+      </userTask>
+      <sequenceFlow id="to-user-how" sourceRef="unblock-user" targetRef="user-how" />
+      <exclusiveGateway id="user-how" name="重试还是关闭" default="retry-by-user" />
+      <sequenceFlow id="close-by-user" sourceRef="user-how" targetRef="close">
+        <conditionExpression xsi:type="tFormalExpression">=unblock-user.chose.close</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="retry-by-user" sourceRef="user-how" targetRef="merge" />
+
+      <endEvent id="merging-merged" name="交给 GitHub 了"><extensionElements><coda:output name="outcome" value="merged" /></extensionElements></endEvent>
+      <endEvent id="merging-fixing" name="等修改"><extensionElements><coda:output name="outcome" value="fixing" /></extensionElements></endEvent>
+      <endEvent id="merging-closed" name="关闭了"><extensionElements><coda:output name="outcome" value="closed" /></extensionElements></endEvent>
+    </subProcess>
+    <boundaryEvent id="pushed-while-merging" name="新提交" attachedToRef="merging"><messageEventDefinition messageRef="synchronize" /></boundaryEvent>
+    <sequenceFlow id="merging-pushed" sourceRef="pushed-while-merging" targetRef="opening" />
+    <!-- 等你批准或等会话处理时 base 被改了：改动跟着变了，从头再看，重新评审，「看 base」重新判断叠放。 -->
+    <boundaryEvent id="rebased-while-merging" name="base 变了" attachedToRef="merging"><messageEventDefinition messageRef="edited" /></boundaryEvent>
+    <sequenceFlow id="merging-rebased" sourceRef="rebased-while-merging" targetRef="opening" />
+    <boundaryEvent id="closed-while-merging" name="PR 关闭" attachedToRef="merging"><messageEventDefinition messageRef="closed" /></boundaryEvent>
+    <sequenceFlow id="merging-ended" sourceRef="closed-while-merging" targetRef="ended" />
+    <sequenceFlow id="to-after-merging" sourceRef="merging" targetRef="after-merging" />
+    <exclusiveGateway id="after-merging" name="接下来" default="to-confirming" />
+    <sequenceFlow id="merged-to-waiting" sourceRef="after-merging" targetRef="waiting">
+      <conditionExpression xsi:type="tFormalExpression">=merging.outcome = "fixing"</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-closed-here" sourceRef="after-merging" targetRef="closed-here">
+      <conditionExpression xsi:type="tFormalExpression">=merging.outcome = "closed"</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="to-confirming" sourceRef="after-merging" targetRef="confirming" />
+    <endEvent id="closed-here" coda:status="已关闭 PR" />
+
+    <!-- 合并以 GitHub 的关闭事件为准，它带来合并提交；进了合并队列的也在这里等。期间有新提交（被移出了队列）就从头再来。 -->
+    <eventBasedGateway id="confirming" name="等 GitHub 确认" coda:status="已交给 GitHub 合并：等它确认" />
+    <sequenceFlow id="c-closed" sourceRef="confirming" targetRef="confirmed" />
+    <intermediateCatchEvent id="confirmed" name="PR 关闭"><messageEventDefinition messageRef="closed" /></intermediateCatchEvent>
+    <sequenceFlow id="to-landed" sourceRef="confirmed" targetRef="landed" />
+    <exclusiveGateway id="landed" name="合并了吗" default="closed-unmerged" />
+    <sequenceFlow id="landed-merged" sourceRef="landed" targetRef="delivering-or-not">
+      <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.merged</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="closed-unmerged" sourceRef="landed" targetRef="closed-elsewhere" />
+    <sequenceFlow id="c-pushed" sourceRef="confirming" targetRef="requeued" />
+    <intermediateCatchEvent id="requeued" name="新提交"><messageEventDefinition messageRef="synchronize" /></intermediateCatchEvent>
+    <sequenceFlow id="requeued-open" sourceRef="requeued" targetRef="opening" />
+
+    <!-- 别处合并或关闭了 PR（GitHub 网页上，或这条运行交给 GitHub 之前）：运行结束，不部署、不发布。 -->
+    <exclusiveGateway id="ended" name="合并了吗" default="closed-there" />
+    <sequenceFlow id="theirs" sourceRef="ended" targetRef="merged-there">
+      <conditionExpression xsi:type="tFormalExpression">=github.event.pull_request.merged</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="closed-there" sourceRef="ended" targetRef="closed-elsewhere" />
+    <endEvent id="merged-there" coda:status="已在 GitHub 上合并" />
+    <endEvent id="closed-elsewhere" coda:status="PR 已关闭" />
+
+    <exclusiveGateway id="delivering-or-not" name="部署或发布吗" default="merged-only" />
+    <sequenceFlow id="to-delivering" sourceRef="delivering-or-not" targetRef="delivering">
+      <conditionExpression xsi:type="tFormalExpression">=merge.deploy or merge.release</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="merged-only" sourceRef="delivering-or-not" targetRef="merged-here" />
+    <endEvent id="merged-here" coda:status="已合并" coda:notify="=merge.notify" />
+
+    <!-- 部署与发布：项目自己声明哪些流程是部署（coda:kind="deploy"）、预览发布（preview）、正式发布（release），这里在合并提交上调用它们；
+         项目没有这一类的流程，这一步直接过去。先部署，再请开 PR 的会话写更新说明、发布。失败时运行失败，交回开 PR 的会话。 -->
+    <subProcess id="delivering" name="部署与发布" coda:optional="true">
+      <startEvent id="delivering-in" />
+      <sequenceFlow id="dl-in" sourceRef="delivering-in" targetRef="deploying" />
+      <exclusiveGateway id="deploying" name="部署吗" default="not-deploying" />
+      <sequenceFlow id="to-deploy" sourceRef="deploying" targetRef="deploy">
+        <conditionExpression xsi:type="tFormalExpression">=merge.deploy</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="not-deploying" sourceRef="deploying" targetRef="releasing" />
+      <serviceTask id="deploy" name="部署" coda:action="run-workflows" coda:status="部署中">
+        <extensionElements>
+          <coda:param name="kind" value="deploy" />
+          <coda:param name="commit" value="=github.event.pull_request.merge_commit_sha" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="deployed" sourceRef="deploy" targetRef="releasing" />
+      <exclusiveGateway id="releasing" name="发布吗" default="deploy-only" />
+      <sequenceFlow id="to-notes" sourceRef="releasing" targetRef="notes">
+        <conditionExpression xsi:type="tFormalExpression">=merge.release</conditionExpression>
+      </sequenceFlow>
+      <sequenceFlow id="deploy-only" sourceRef="releasing" targetRef="delivered" />
+      <endEvent id="delivered" coda:status="已合并并部署" />
+
+      <userTask id="notes" name="写更新说明" coda:status="发布：写更新说明" coda:completeLabel="提交并继续发布" coda:rejectLabel="无法提供更新说明" coda:noteLabel="更新说明">
+        <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并，接下来按用户的选择发布。
+
+请写这次发布的更新说明：Markdown，面向用户，写这次改了什么、用户会注意到什么变化，不写内部实现，不超过 2000 字。用 completed 答复，note 里只放更新说明本身。做不了就用 rejected 并说明原因，由用户来写。</documentation>
+      </userTask>
+      <sequenceFlow id="noted" sourceRef="notes" targetRef="publishing" />
+      <boundaryEvent id="no-notes" name="做不了" attachedToRef="notes"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="to-notes-user" sourceRef="no-notes" targetRef="notes-user" />
+      <userTask id="notes-user" name="写更新说明" coda:assignee="user" coda:status="发布：等你写更新说明" coda:completeLabel="提交并继续发布" coda:rejectLabel="不再发布" coda:noteLabel="更新说明">
+        <documentation>PR #{{github.event.number}}（{{github.event.pull_request.html_url}}）已合并，接下来按你的选择发布。开 PR 的会话没写更新说明，理由在这次运行的「写更新说明」任务里。
+
+请填写面向用户的更新说明（Markdown，不超过 2000 字）。</documentation>
+      </userTask>
+      <sequenceFlow id="noted-by-user" sourceRef="notes-user" targetRef="publishing" />
+      <boundaryEvent id="not-releasing" name="不再发布" attachedToRef="notes-user"><errorEventDefinition /></boundaryEvent>
+      <sequenceFlow id="to-unreleased" sourceRef="not-releasing" targetRef="unreleased" />
+      <endEvent id="unreleased" coda:status="你决定不再发布" />
+
+      <scriptTask id="publishing" name="整理发布参数" coda:timeout="5" coda:checkout="false" scriptFormat="bash">
+        <extensionElements>
+          <coda:env name="AGENT" value="=notes" />
+          <coda:env name="USER" value="=notes-user" />
+          <coda:output name="inputs" />
+        </extensionElements>
+        <script>node "${CODA_PLUGIN_PATH}/scripts/notes.mjs"</script>
+      </scriptTask>
+      <sequenceFlow id="to-publish" sourceRef="publishing" targetRef="publish" />
+      <serviceTask id="publish" name="发布" coda:action="run-workflows" coda:status="发布中">
+        <extensionElements>
+          <coda:param name="kind" value="=merge.releaseKinds" />
+          <coda:param name="commit" value="=github.event.pull_request.merge_commit_sha" />
+          <coda:param name="inputs" value="=publishing.inputs" />
+        </extensionElements>
+      </serviceTask>
+      <sequenceFlow id="published" sourceRef="publish" targetRef="released-end" />
+      <endEvent id="released-end" coda:status="已发布" />
+    </subProcess>
+    <sequenceFlow id="to-delivered" sourceRef="delivering" targetRef="delivering-done" />
+    <endEvent id="delivering-done" coda:notify="=merge.notify" />
+  </process>
+</definitions>
