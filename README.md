@@ -20,6 +20,7 @@ templates/panel/         最小的面板插件：一张卡片、一条进度条�
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 docs/agent-protocol.md   Coda 接入协议正文的公开副本
+.coda/workflows/         本仓库自己的流程：sync-coda 把内置插件的副本同步进 Coda
 ```
 
 ## Coda 自带的插件
@@ -29,6 +30,9 @@ Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提�
 （记着本仓库的提交与每个目录的树哈希）把那个提交里的 `plugins/<id>` 原样复制过去，新机器、离线首启都带着它们。
 
 - **改它们先在这里提 PR、合并**，再在 Coda 里同步到那个提交；不要直接改 Coda 里的副本（Coda 的测试会核对副本与锁文件一致）。
+  同步由本仓库的部署流程 `sync-coda`（`.coda/workflows/sync-coda.bpmn`、`scripts/sync-coda.mjs`）做：合并时勾选「部署」，
+  它在合并提交上运行 Coda 的同步脚本，推到 Coda 的分支 `sync/coda-plugins` 并开 PR（开着的就只更新），PR 由开这边 PR 的会话负责、走 Coda 的 PR 流程；
+  副本没有变化就什么都不做。也可以单独发起，同步默认分支的最新提交。
 - **改了哪个插件就升哪个插件的 `version`**（`plugins/<id>/` 下任何文件，含 `package-lock.json`；只改 `test/` 不用）：Coda 的插件页与遥测按版本认插件。
   CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
 - Coda 的「检查更新」可以从这里装同一插件的新提交，盖过内置副本；只有本仓库的 `plugins/<id>` 这个来源能用这些名字。

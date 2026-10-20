@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 把内置插件的副本同步进 Coda。属于部署类：合并时勾选「部署」就在合并提交上运行，也可单独发起（默认分支的最新提交）；只运行已合并的提交。
+     副本没有变化，或 Coda、开着的同步 PR 已包含这个提交时什么都不推；否则更新分支 sync/coda-plugins，没有开着的 PR 就开一个。
+     PR 登记在负责这次运行的会话上，由 Coda 那边的 PR 流程跟进。做法见 scripts/sync-coda.mjs。 -->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:coda="https://coda.pub/schema/bpmn/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="sync-coda-definitions" targetNamespace="https://coda.pub/workflows/coda-plugins">
+  <process id="sync-coda" name="同步内置插件到 Coda" isExecutable="true" coda:concurrency="sync-coda" coda:deploy="true" coda:kind="deploy">
+    <startEvent id="start" />
+    <sequenceFlow id="to-sync" sourceRef="start" targetRef="sync" />
+    <scriptTask id="sync" name="同步副本并开 PR" coda:timeout="15" scriptFormat="bash">
+      <extensionElements>
+        <coda:output name="line" />
+        <coda:output name="pr" />
+      </extensionElements>
+      <script>node scripts/sync-coda.mjs</script>
+    </scriptTask>
+    <sequenceFlow id="to-end" sourceRef="sync" targetRef="end" />
+    <endEvent id="end" coda:status="=sync.line" />
+  </process>
+</definitions>
