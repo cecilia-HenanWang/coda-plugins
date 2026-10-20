@@ -45,7 +45,10 @@ const body = [`取自 https://github.com/coda-console/coda-plugins/commit/${sha}
   log.length ? `这期间改到副本的提交：\n\n${log.join('\n')}` : '', '由 coda-plugins 的部署流程 sync-coda 生成；同步分支每次从 main 重建，不要在上面另加提交。'].filter(Boolean).join('\n\n');
 
 const open = run('gh', ['pr', 'list', '-R', SLUG, '--head', BRANCH, '--state', 'open', '--json', 'url', '-q', '.[0].url'], coda);
-const pending = open && tried('git', ['fetch', '--quiet', 'origin', BRANCH], coda) !== null ? lockAt('FETCH_HEAD') : null;
+// An open pull request's branch may be from a later commit than this one: unread, nothing is pushed over it or closed.
+if (open) run('git', ['fetch', '--quiet', 'origin', BRANCH], coda);
+const pending = open ? lockAt('FETCH_HEAD') : null;
+if (open && !pending) { console.error(`同步 PR ${open} 的分支 ${BRANCH} 上读不到 ${LOCK}，不覆盖它`); process.exit(1); }
 if (pending && covers(pending.commit)) {
   // Pushed by a run of this commit that may have stopped before saying so on the pull request: said again. A later commit's
   // run says it for its own, when it is run again.
