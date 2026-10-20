@@ -35,9 +35,23 @@ const covers = commit => commit === sha || tried('git', ['merge-base', '--is-anc
 const main = lockAt('origin/main');
 if (!main) { console.error(`Coda 的 main 上读不到 ${LOCK}`); process.exit(1); }
 if (covers(main.commit)) done(`Coda 的副本取自 ${short(main.commit)}，已包含 ${short(sha)}`);
+
+// What changed in the copies since Coda's: this repository's commits that touch them, their PR numbers pointing here.
+const paths = [...Object.values(main.plugins).map(p => p.path), ...CHECKER];
+const log = (tried('git', ['log', '--format=%s', `${main.commit}..${sha}`, '--', ...paths], here) ?? '').split('\n').filter(Boolean)
+  .map(subject => `- ${subject.replace(/\(#(\d+)\)/g, '(coda-console/coda-plugins#$1)')}`);
+const title = `同步 coda-plugins 的内置插件副本到 ${short(sha)}`;
+const body = [`取自 https://github.com/coda-console/coda-plugins/commit/${sha}，上次是 ${short(main.commit)}。`,
+  log.length ? `这期间改到副本的提交：\n\n${log.join('\n')}` : '', '由 coda-plugins 的部署流程 sync-coda 生成；同步分支每次从 main 重建，不要在上面另加提交。'].filter(Boolean).join('\n\n');
+
 const open = run('gh', ['pr', 'list', '-R', SLUG, '--head', BRANCH, '--state', 'open', '--json', 'url', '-q', '.[0].url'], coda);
 const pending = open && tried('git', ['fetch', '--quiet', 'origin', BRANCH], coda) !== null ? lockAt('FETCH_HEAD') : null;
-if (pending && covers(pending.commit)) done(`同步 PR 已取自 ${short(pending.commit)}，包含 ${short(sha)}：${open}`, open);
+if (pending && covers(pending.commit)) {
+  // Pushed by a run of this commit that may have stopped before saying so on the pull request: said again. A later commit's
+  // run says it for its own, when it is run again.
+  if (pending.commit === sha) run('gh', ['pr', 'edit', open, '--title', title, '--body', body], coda);
+  done(`同步 PR 已取自 ${short(pending.commit)}，包含 ${short(sha)}：${open}`, open);
+}
 
 run('git', ['switch', '--quiet', '-C', BRANCH, 'origin/main'], coda);
 run('node', ['scripts/sync-plugins.mjs', 'update', sha, '--from', here], coda);
@@ -51,13 +65,6 @@ if (!changed) done(`内置插件在 ${short(sha)} 与 Coda 的副本相同，不
 if (/package(-lock)?\.json$/m.test(changed))
   run('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], join(coda, 'backend'));
 
-// What changed in the copies since Coda's: this repository's commits that touch them, their PR numbers pointing here.
-const paths = [...Object.values(main.plugins).map(p => p.path), ...CHECKER];
-const log = (tried('git', ['log', '--format=%s', `${main.commit}..${sha}`, '--', ...paths], here) ?? '').split('\n').filter(Boolean)
-  .map(subject => `- ${subject.replace(/\(#(\d+)\)/g, '(coda-console/coda-plugins#$1)')}`);
-const title = `同步 coda-plugins 的内置插件副本到 ${short(sha)}`;
-const body = [`取自 https://github.com/coda-console/coda-plugins/commit/${sha}，上次是 ${short(main.commit)}。`,
-  log.length ? `这期间改到副本的提交：\n\n${log.join('\n')}` : '', '由 coda-plugins 的部署流程 sync-coda 生成；同步分支每次从 main 重建，不要在上面另加提交。'].filter(Boolean).join('\n\n');
 run('git', ['add', '-A'], coda);
 run('git', ['commit', '--quiet', '-m', `${title}\n\n${body}`], coda);
 run('node', ['scripts/sync-plugins.mjs', 'check'], coda);
