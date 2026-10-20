@@ -53,10 +53,10 @@ catch { fail(`无法从 base 提交 ${base.slice(0, 12)} 读取项目评审准�
 const last = json('LAST', {}) ?? {};
 const previous = last.decision && last.head !== head ? String(last.report ?? '').trim() : '';
 
-// The emphases the settings leave on (`review.principles.*`), each a paragraph of ../prompts/principles/, in this order.
-const on = json('PRINCIPLES', {}) ?? {};
-const principles = ['state', 'defense', 'architecture', 'tests'].filter(name => on[name] !== false)
-  .map(name => readFileSync(new URL(`../prompts/principles/${name}.md`, import.meta.url), 'utf8').trim());
+// The emphases ticked in the settings (`review.principles`), each a paragraph of ../prompts/principles/, in their order.
+const chosen = json('PRINCIPLES', null);
+if (!Array.isArray(chosen)) fail('没有拿到设置「评审重点」');
+const principles = chosen.map(name => readFileSync(new URL(`../prompts/principles/${name}.md`, import.meta.url), 'utf8').trim());
 
 // The prompt: the template with each placeholder put in as a whole paragraph, in one pass, so nothing put in is read again.
 // The author's text sits between markers the author cannot guess, and the rules come after it.

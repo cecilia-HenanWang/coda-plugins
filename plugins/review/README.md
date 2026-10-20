@@ -21,7 +21,7 @@ prompts/principles/                 评审重点，一项一段，按设置取�
 | --- | --- | --- |
 | `review.reviewers` 评审组合 | 表格：作者匹配 → Agent 组合 | Claude 由 Codex 评审，Codex 由 Claude 评审，Kimi、Grok 由 Codex 评审，OpenCode 由 Claude 评审 |
 | `review.blockingSeverity` 阻塞级别 | P0–P3 之一 | P2 |
-| `review.principles.*` 评审重点：`state` 状态与失败、`defense` 多余的防御、`architecture` 架构与腐化、`tests` 测试 | 各一个开关，开着的那段（`prompts/principles/` 下同名文件）放进提示词 | 都开 |
+| `review.principles` 评审重点 | 多选：`state` 状态与失败、`defense` 多余的防御、`architecture` 架构与腐化、`tests` 测试；勾选的那几段（`prompts/principles/` 下同名文件）放进提示词 | 都选 |
 | `review.maxReviews` 一条运行最多自动评审几次 | 整数 1–100 | 3 |
 | `review.mergeMethod` 合并方式 | `squash`、`merge`、`rebase` 之一 | `squash` |
 
