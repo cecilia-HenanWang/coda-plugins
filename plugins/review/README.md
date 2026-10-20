@@ -14,12 +14,14 @@ scripts/merge.mjs                   合并
 scripts/notes.mjs                   发布流程的参数（更新说明与 publish）
 scripts/step.mjs                    各脚本共用：读参数、写输出与摘要、读 PR 的 base
 prompts/review.md                   评审方收到的提示词
+prompts/principles/                 评审重点，一项一段，按设置取用
 ```
 
 | 设置 | 类型 | 默认 |
 | --- | --- | --- |
 | `review.reviewers` 评审组合 | 表格：作者匹配 → Agent 组合 | Claude 由 Codex 评审，Codex 由 Claude 评审，Kimi、Grok 由 Codex 评审，OpenCode 由 Claude 评审 |
 | `review.blockingSeverity` 阻塞级别 | P0–P3 之一 | P2 |
+| `review.principles.*` 评审重点：`state` 状态与失败、`defense` 多余的防御、`architecture` 架构与腐化、`tests` 测试 | 各一个开关，开着的那段（`prompts/principles/` 下同名文件）放进提示词 | 都开 |
 | `review.maxReviews` 一条运行最多自动评审几次 | 整数 1–100 | 3 |
 | `review.mergeMethod` 合并方式 | `squash`、`merge`、`rebase` 之一 | `squash` |
 
@@ -46,7 +48,7 @@ prompts/review.md                   评审方收到的提示词
    - 「评审吗」：同一个提交在同一个 base 上评审通过过就不再评；这条运行已自动评审 `review.maxReviews` 次（手动发起的不数），交给你「评审次数已到上限」：放行当前版本，或再评审一次。
    - 「交叉评审」（`review.mjs`）：按评审组合最具体的一行选出评审方（行键是 `*`、`agent`、`agent|model`、`agent|model|effort`，没有适用的行就失败），
      用 `coda-agent` 在被评审的提交上开一个新会话，交给它填好的提示词：去哪看改动、项目评审准则、作者写的标题与正文（夹在作者猜不到的标记之间，声明只是参考资料）、
-     这个提交上各项检查的结论、这条运行上一次评审的发现、关注点。会话失败或结果未知时每隔 20 秒重试，最多 3 次；取消或参数错误不重试。
+     这个提交上各项检查的结论、这条运行上一次评审的发现、开着的评审重点、关注点。会话失败或结果未知时每隔 20 秒重试，最多 3 次；取消或参数错误不重试。
    - 评审方按 P0（最严重）到 P3 给每条发现定级，在回复末尾的 `review` 代码块里以 JSON 列出；脚本按阻塞级别得出结论：
 
      | 结论 | 条件 | 之后 |

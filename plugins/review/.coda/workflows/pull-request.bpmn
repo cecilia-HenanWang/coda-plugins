@@ -119,6 +119,7 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
         <extensionElements>
           <coda:env name="REVIEWERS" value="=vars.review.reviewers" />
           <coda:env name="BLOCKING" value="=vars.review.blockingSeverity" />
+          <coda:env name="PRINCIPLES" value="=vars.review.principles" />
           <coda:env name="SESSION" value="=github.event.coda.session" />
           <coda:env name="PULL_REQUEST" value="=github.event.pull_request" />
           <coda:env name="PR" value="=inputs.pr" />
