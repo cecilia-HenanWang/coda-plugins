@@ -8,7 +8,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from '
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_REPOSITORY, CAPABILITY,
-  CODA_COMMANDS, COMMAND, COMMAND_LIMIT, CONTRIBUTES, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
+  CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, CONTRIBUTES, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
   SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT } from './coda.mjs';
 
 class Invalid extends Error {}
@@ -319,6 +319,15 @@ export function checkManifest(dir, say) {
     'contributes.groups 须为 { name, capacity } 的数组：name 为 1–100 个非空白字符、不重复，capacity 是本插件声明的整数设置');
     return groups;
   }, groups => groups.length ? `并发组 ${groups.map(g => g.name).join('、')}` : null) ?? [];
+  part('manifest.events', () => {
+    const events = contributes.events ?? [];
+    check(Array.isArray(events) && events.length <= EVENT_LIMIT && events.every(e => e && typeof e === 'object' && Object.keys(e).every(k => ['name', 'starts', 'ends'].includes(k))
+      && typeof e.name === 'string' && EVENT.test(e.name) && !CODA_EVENT_DOMAINS.includes(e.name.split('.')[0])
+      && ['starts', 'ends'].every(k => e[k] === undefined || typeof e[k] === 'boolean'))
+      && new Set(events.map(e => e.name)).size === events.length,
+    `contributes.events 须为 { name, starts?, ends? } 的数组，至多 ${EVENT_LIMIT} 个：name 是「<域>.<名>」（小写字母、数字和「_」，以字母开头，不超过 100 个字符，不重复，域不能是 Coda 自己的 ${CODA_EVENT_DOMAINS.join('、')}），starts、ends 是真假值`);
+    return events;
+  }, events => events.length ? `发布的事件 ${events.map(e => e.name).join('、')}` : null);
   const commands = part('manifest.commands', () => {
     const commands = contributes.commands ?? [];
     check(Array.isArray(commands) && commands.every(c => c && typeof c === 'object' && Object.keys(c).every(k => ['name', 'command'].includes(k))

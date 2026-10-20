@@ -101,14 +101,20 @@ export const PANEL_ID = /^[a-z][a-z0-9-]{0,63}$/;
 export const POINT = /^[a-z][a-z0-9-]{0,39}$/;
 export const SETTING_KEY = /^[a-z][a-z0-9-]*(\.[a-z][A-Za-z0-9]*)+$/;
 export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
-export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'commands', 'services',
-  'setup'];
+export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands',
+  'services', 'setup'];
 // The bundled services a plugin turns on (`contributes.services`, docs/supervisor.md「独立服务进程」): their IDs.
 export const SERVICE = /^[a-z][a-z0-9-]{0,63}$/;
 // A command a plugin puts on every session's and step's PATH (`contributes.commands`): its name, as a shell finds it, which
 // may not be one of Coda's own; what runs for it, one line.
 export const COMMAND = /^[a-z][a-z0-9-]{0,39}$/;
-export const CODA_COMMANDS = ['gh', 'coda-run'];
+export const CODA_COMMANDS = ['coda-run', 'coda-event'];
+// An event a plugin publishes (`contributes.events`, Coda's docs/plugins.md「事件」): `<域>.<名>`, in no domain of Coda's own;
+// whether it starts the workflows subscribed to it (`starts`), and whether it ends its subject (`ends`: a run re-run after it
+// is told it again).
+export const EVENT = /^(?=.{3,100}$)[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+export const CODA_EVENT_DOMAINS = ['workflow', 'session', 'user'];
+export const EVENT_LIMIT = 50;
 export const COMMAND_LIMIT = 4000;
 // A plugin's setup action (`contributes.setup`): `{ command }`, one line as a panel's command is; it may install software, so
 // the checker reads it and does not run it.
