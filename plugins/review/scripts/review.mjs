@@ -33,12 +33,17 @@ const reviewer = reviewers[row];
 const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
 let pr = event;
 if (!automatic) {
+  // What it says when it finds none, or cannot look, is why none is reviewed.
   const reported = () => {
     const found = spawnSync('github-reported-pr', [], { encoding: 'utf8', timeout: 60_000 });
-    return found.status === 0 ? found.stdout.trim() : '';
+    if (found.error) fail(`没有指明要评审的 PR，也没能查会话最近开的 PR：${found.error.code === 'ENOENT'
+      ? '没有 GitHub 插件的 github-reported-pr（项目里停用了 GitHub 插件时要填 PR）' : `github-reported-pr ${found.error.message}`}`);
+    if (found.status !== 0) fail(`没有指明要评审的 PR，也没查到会话最近开的 PR：${found.stderr.trim().split('\n').at(-1)
+      || `github-reported-pr 以 ${found.status ?? found.signal} 退出`}`);
+    return found.stdout.trim();
   };
   const asked = (process.env.PR ?? '').trim() || reported();
-  if (!asked) fail('没有指明要评审的 PR，会话也没有开过这个仓库的 PR');
+  if (!asked) fail('没有指明要评审的 PR，github-reported-pr 也没有给出');
   let view;
   try { view = JSON.parse(execFileSync('gh', ['pr', 'view', asked, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
   catch (e) { fail(`读不到 PR ${asked}：${e.stderr?.toString().trim() || e.message}`); }
