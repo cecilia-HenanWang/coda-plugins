@@ -1,9 +1,9 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: 9284fd572a38293df6e46199b8c8bf1892d00213
+  coda-commit: 52831f0e2a09b16187f254ad2d19e270723bdc3b
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 9c51fd6e6fdc2e12aa52ce0c96b892c82d3dc416b5b4ef3a250fff46436a1023
+  body-sha256: 51fd9d04a991c6fde0722f7483e9a49796d01a5cbc7966e0e686bf50522afe02
 -->
 # Agent 接入协议
 
@@ -54,11 +54,15 @@ ACP 只允许在一轮（`session/prompt`）进行时交互。Agent 在两轮之
   同一模型下 Agent 报的值，两样都不知道就不改。Agent 自己改的 Coda 不去改回；用户在会话里用命令改的（如 Codex 的 `/fast`）记进会话设置。名字与说明照 Agent 给的显示。
 - **未登录**：Agent 在 `initialize`、`session/new` 或 `session/load` 回错误 -32000（ACP 的 `auth_required`）时，Coda 告诉用户这个 Agent 未登录，
   到「资源」里添加（面板的登录）；Coda 不调用 `authenticate`，也不按错误文字猜。
+- **Agent 版本**：`initialize` 结果的 `agentInfo`（ACP 的 `name`、`version`）填**实际运行的那个 Agent**：包装了别家 CLI 或 SDK 的插件，
+  报那个 CLI 或 SDK 的名字与版本（如 `codex`、`0.130.0`），不报插件自己的版本（插件版本 Coda 已从清单知道）。
+  Coda 记下每个 Agent 最近一次握手报的值，随后端遥测上报（Coda 遥测服务），用于复盘 Agent 版本带来的兼容问题；
+  只取版本号式的字符（字母、数字与 `.+()-_` 空格，至多 64 个），其他写法不记。不报不影响会话。
 
 ## 会话指令
 
 Coda 给每个会话一份指令：回复怎样在 Mac 与 iPhone 上显示、默认回复语言，再接项目启用的插件说明（插件的 `contributes.instructions`），
-正文在 `backend/src/domain/client-instructions.mjs`。它走 ACP 的 [`systemPrompt`](https://agentclientprotocol.com/protocol/draft/session-setup#system-prompt-unstable)（unstable），
+正文在 `backend/src/components/session-config/client-instructions.mjs`。它走 ACP 的 [`systemPrompt`](https://agentclientprotocol.com/protocol/draft/session-setup#system-prompt-unstable)（unstable），
 **接入 Coda 的 Agent 必须支持**：
 
 - **声明**：`initialize` 结果的 `agentCapabilities.sessionCapabilities.systemPrompt: {}`。Coda 只用 `append` 模式，不需要声明 `mode.override`。
@@ -232,7 +236,7 @@ Coda 发给 Agent 的请求，参数 `{ "sessionId": …, "waitId": … }`，Age
 
 Coda 自带的 Agent 都是内置插件（清单见插件：Agent），照本协议接入。源码与入口自己的测试在公开仓库
 coda-console/coda-plugins 的 `plugins/<插件>/`、`test/plugins/<插件>/`，Coda 里的 `backend/src/resources/plugins/<插件>/` 是钉住提交的只读副本
-（开发与验证：内置 Agent 插件）。各家要做的特殊处理在它自己的入口进程里（插件的 `agent/`），
+（开发与验证：coda-plugins 维护的内置插件）。各家要做的特殊处理在它自己的入口进程里（插件的 `agent/`），
 入口只用插件目录里的代码、它 `package.json` 声明的 npm 依赖与 Node 自带的模块，不引用 Coda 后端的模块。怎么启动写在清单的 `command` 里：
 插件自带的入口由 Coda 的 Node（`CODA_NODE`）从运行时副本里的插件目录运行，其余是运行机上的命令。
 从仓库安装的插件，入口从它的版本目录运行，只能用插件目录里的代码、它自己的 npm 依赖与 Node 自带的模块。

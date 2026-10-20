@@ -41,18 +41,37 @@ const DURATION = /^P(?!$)(\d+(\.\d+)?Y)?(\d+(\.\d+)?M)?(\d+(\.\d+)?W)?(\d+(\.\d+
 const isDuration = value => typeof value === 'string' && value.length <= 200 && DURATION.test(value);
 
 // ---- Settings (plugins.mjs `schema`, `checkValue`) ----
+// A choice of several's option (plugin-rules.mjs OPTION).
+const OPTION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 function schema(value, where, entry = false) {
   check(value && typeof value === 'object' && !Array.isArray(value), `${where} 须为 JSON Schema 对象`);
   const known = ['type', 'default', 'description', 'markdownDescription', 'title', 'enum', 'enumDescriptions', 'minimum', 'maximum', 'format', 'order',
-    ...(entry ? [] : ['additionalProperties', 'propertyNames'])];
+    ...(entry ? [] : ['additionalProperties', 'propertyNames', 'items', 'uniqueItems'])];
+  check(value.type !== 'array' || !entry, `${where}：多选只能是插件的一项设置，不能放进表格`);
   keys(value, known, where);
   const agent = value.format === 'coda-agent';
-  check(['boolean', 'integer', 'number', 'string', 'object'].includes(value.type), `${where} 的 type 不受支持：${value.type}`);
+  check(['boolean', 'integer', 'number', 'string', 'object', 'array'].includes(value.type), `${where} 的 type 不受支持：${value.type}`);
+  check((value.items === undefined && value.uniqueItems === undefined) || value.type === 'array', `${where}：只有多选（type: array）才写 items 与 uniqueItems`);
   check(value.format === undefined || agent || value.format === 'coda-agent-match' || value.format === 'duration', `${where} 的 format 不受支持：${value.format}`);
   check(!agent || value.type === 'object', `${where}：coda-agent 是对象`);
   check(value.format !== 'duration' || value.type === 'string', `${where}：duration 是文本`);
   check(value.enum === undefined || (Array.isArray(value.enum) && value.enum.length && ['string', 'integer', 'number'].includes(value.type)), `${where} 的 enum 无效`);
   const out = { type: value.type, format: value.format, enum: value.enum, minimum: value.minimum, maximum: value.maximum };
+  if (value.type === 'array') {
+    check(value.format === undefined && value.minimum === undefined && value.maximum === undefined, `${where}：多选不写 format、minimum 与 maximum`);
+    check(value.uniqueItems === undefined || value.uniqueItems === true, `${where}：多选的 uniqueItems 只能是 true（每项至多选一次）`);
+    const items = value.items, options = items?.anyOf;
+    check(items && typeof items === 'object' && !Array.isArray(items) && Object.keys(items).every(k => k === 'anyOf') && Array.isArray(options)
+      && options.length >= 1 && options.length <= 50, `${where}：多选写 items: { anyOf: [{ const, title, description }] }，1–50 项`);
+    out.options = options.map((option, i) => {
+      check(option && typeof option === 'object' && !Array.isArray(option) && Object.keys(option).every(k => ['const', 'title', 'description'].includes(k))
+        && typeof option.const === 'string' && OPTION.test(option.const), `${where}.items.anyOf[${i}] 须为 { const, title, description }，const 只用字母、数字和「._-」`);
+      check(['title', 'description'].every(k => option[k] === undefined || (typeof option[k] === 'string' && option[k].length <= 400)),
+        `${where}.items.anyOf[${i}] 的 title 与 description 须为不超过 400 字的文字`);
+      return option.const;
+    });
+    check(new Set(out.options).size === out.options.length, `${where}：多选的 const 不能重复`);
+  }
   if (value.type === 'object' && !agent) {
     check(!entry, `${where}：表格的每一项只能是单个值或 Agent 组合`);
     check(value.additionalProperties !== undefined, `${where} 需要 additionalProperties`);
@@ -72,6 +91,12 @@ function checkValue(spec, value, where) {
   // An agent combination: Coda also checks model, effort, mode and options (domain/commands.mjs settings); here only the agent.
   if (spec.format === 'coda-agent') {
     check(value && typeof value === 'object' && !Array.isArray(value) && typeof value.agent === 'string' && AGENT_ID.test(value.agent), `${where} 须为 Agent 组合，并指明 Agent`);
+    return;
+  }
+  if (spec.type === 'array') {
+    check(Array.isArray(value) && value.every(v => typeof v === 'string'), `${where}须为选中的几项`);
+    const unknown = value.filter(v => !spec.options.includes(v));
+    check(!unknown.length, `${where}只能从这些里选：${spec.options.join('、')}（没有 ${unknown.join('、')}）`);
     return;
   }
   if (spec.type === 'boolean') check(typeof value === 'boolean', `${where}须为开或关`);
