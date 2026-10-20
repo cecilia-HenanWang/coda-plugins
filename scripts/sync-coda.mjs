@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // 合并后把内置插件的副本同步进 Coda（.coda/workflows/sync-coda.bpmn）。Coda 带的是这里某个提交的只读副本，换副本由 Coda 的
 // scripts/sync-plugins.mjs 做（Coda 的 docs/development.md「coda-plugins 维护的内置插件」）：这里在 Coda 的一份克隆上用它取这个提交，
-// 推到固定的分支 sync/coda-plugins，再给它开 PR；PR 已开着就只更新分支。开 PR 的 gh 是 Coda 的：步骤带着负责这次运行的会话，
-// PR 登记在它上面，由 Coda 那边的 PR 流程跟进。Coda 或开着的同步 PR 已包含这个提交，或副本没有变化时，什么都不推。
+// 推到固定的分支 sync/coda-plugins，再给它开 PR；PR 已开着就更新分支与它的标题、正文。开 PR 的 gh 是 Coda 的：步骤带着负责这次运行的会话，
+// PR 登记在它上面，由 Coda 那边的 PR 流程跟进。Coda 或开着的同步 PR 已包含这个提交时什么都不推；副本与 Coda 的相同时也不推，
+// 开着的同步 PR 就此关掉，免得它分支上已被撤回的改动合进去。
 //
 //   node scripts/sync-coda.mjs     在流程步骤里：GITHUB_SHA 是要同步的提交，GITHUB_WORKSPACE 是它的检出
 // 提交署谁的名、推送用哪个账号，由 Coda 按 Coda 仓库的地址决定。
@@ -41,7 +42,12 @@ if (pending && covers(pending.commit)) done(`同步 PR 已取自 ${short(pending
 run('git', ['switch', '--quiet', '-C', BRANCH, 'origin/main'], coda);
 run('node', ['scripts/sync-plugins.mjs', 'update', sha, '--from', here], coda);
 const changed = run('git', ['status', '--porcelain', '--', '.', `:!${LOCK}`], coda);
+if (!changed && open) {
+  run('gh', ['pr', 'close', open, '--delete-branch', '--comment', `内置插件在 ${short(sha)} 与 Coda 的副本相同，这个同步 PR 不再需要。`], coda);
+  done(`内置插件在 ${short(sha)} 与 Coda 的副本相同，已关闭同步 PR：${open}`);
+}
 if (!changed) done(`内置插件在 ${short(sha)} 与 Coda 的副本相同，不用同步`);
+// The copies' overrides are written into Coda's backend/package.json by the update; their npm packages go into its lock here.
 if (/package(-lock)?\.json$/m.test(changed))
   run('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], join(coda, 'backend'));
 
@@ -56,6 +62,9 @@ run('git', ['add', '-A'], coda);
 run('git', ['commit', '--quiet', '-m', `${title}\n\n${body}`], coda);
 run('node', ['scripts/sync-plugins.mjs', 'check'], coda);
 run('git', ['push', '--quiet', '--force', 'origin', BRANCH], coda);
-if (open) done(`同步 PR 已更新到 ${short(sha)}：${open}`, open);
+if (open) {
+  run('gh', ['pr', 'edit', open, '--title', title, '--body', body], coda);
+  done(`同步 PR 已更新到 ${short(sha)}：${open}`, open);
+}
 const url = run('gh', ['pr', 'create', '-R', SLUG, '--base', 'main', '--head', BRANCH, '--title', title, '--body', body, '--ready'], coda).split('\n').at(-1);
 done(`已开同步 PR：${url}`, url);
