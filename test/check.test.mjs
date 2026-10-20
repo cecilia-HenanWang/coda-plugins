@@ -232,6 +232,10 @@ describe('manifests Coda does not take', () => {
     assert.deepEqual(failed(elsewhere), []);
   });
   test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { menus: [] } } }, 'manifest.contributes'));
+  test('what only a plugin Coda ships may contribute', async () => {
+    await manifestFails({ manifest: { contributes: { gitCredentials: [{ url: 'https://example.com', command: 'exec true' }] } } }, 'manifest.contributes', /Git 凭据/);
+    await manifestFails({ manifest: { contributes: { repositories: { command: 'exec true' } } } }, 'manifest.contributes', /仓库列表/);
+  });
   test('a command Coda answers for itself, or one on two lines', async () => {
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'coda-event', command: 'exec true' }] } } }, 'manifest.commands', /coda-run、coda-event/);
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.commands');
@@ -270,6 +274,12 @@ describe('manifests Coda does not take', () => {
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'host-sim', command: 'exec true' }] } } }, 'manifest.claims', /内置插件 host/);
     await manifestFails({ manifest: { contributes: { groups: [{ name: 'host', capacity: 'liar.capacity' }],
       configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.claims', /组 host/);
+  });
+  // Coda reads these (docs/plugins.md); the checker does not refuse a plugin for bringing them.
+  test('Skills, variables, PATH, MCP servers, endpoints, views and model services are contributions Coda takes', async () => {
+    const contributes = { skills: [], environment: {}, path: [], mcpServers: {}, endpoints: [], views: [], modelProviders: [] };
+    const { report } = await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true });
+    assert.ok(!failed(report).includes('manifest.contributes'), JSON.stringify(report.failures));
   });
   test('commands and groups of its own are taken', async () => {
     const { report } = await checkPlugin(plugin({ manifest: { contributes: { commands: [{ name: 'liar-run', command: 'exec true' }],

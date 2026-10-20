@@ -101,8 +101,12 @@ export const PANEL_ID = /^[a-z][a-z0-9-]{0,63}$/;
 export const POINT = /^[a-z][a-z0-9-]{0,39}$/;
 export const SETTING_KEY = /^[a-z][a-z0-9-]*(\.[a-z][A-Za-z0-9]*)+$/;
 export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
-export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands',
-  'services', 'setup'];
+// What a plugin may contribute (backend/src/components/plugins/plugin-rules.mjs CONTRIBUTES); anything else is refused.
+export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands', 'gitCredentials',
+  'repositories', 'services', 'setup', 'skills', 'environment', 'path', 'endpoints', 'mcpServers', 'views', 'modelProviders'];
+// What only a plugin Coda ships may contribute, one installed from a repository or npm being refused it
+// (backend/src/components/plugins/plugin-source-rules.mjs catalogProblem): the clients do not show these in the confirmation yet.
+export const BUILTIN_ONLY = { gitCredentials: '只有 Coda 自带的插件能提供 Git 凭据', repositories: '只有 Coda 自带的插件能提供仓库列表' };
 // The bundled services a plugin turns on (`contributes.services`, docs/supervisor.md「独立服务进程」): their IDs.
 export const SERVICE = /^[a-z][a-z0-9-]{0,63}$/;
 // A command a plugin puts on every session's and step's PATH (`contributes.commands`): its name, as a shell finds it, which
