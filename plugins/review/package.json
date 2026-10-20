@@ -2,7 +2,7 @@
   "name": "review",
   "displayName": "PR 生命流程",
   "description": "会话开的 PR 从开出来起一条流程：每个新版本先跑项目声明的检查，再请另一家 Agent 评审，要求修改时交给开 PR 的会话处理、有分歧时交给你仲裁；通过后请你批准合并，合并后按你的选择调用项目的部署、发布流程，PR 合并或关闭时结束。",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "contributes": {
     "configuration": {
       "title": "PR 生命流程",
@@ -106,6 +106,6 @@
         }
       }
     },
-    "instructions": "PR 默认草稿（gh pr create 自动加 --draft）。改动与描述可评审时执行 gh pr ready <号>，可与验证并行；合并的前置验证通过流程步骤或 GitHub 必需检查声明。PR 流程正常结束只更新状态；需要处理的任务与失败会主动送到本会话，不要后台轮询 PR。提前要意见用 workflow_run 手动发起 pull-request，手动评审会交回结论。"
+    "instructions": "开 PR 用 gh pr create --draft，改动与描述可评审时执行 gh pr ready <号>，可与验证并行；只合并进默认分支，叠放的 PR 不会被合并。合并前的验证写成流程步骤或 GitHub 必需检查。流程正常结束只更新状态，任务与失败会送到本会话，不要轮询 PR；提前要意见用 workflow_run 手动发起 pull-request，手动评审会交回结论。"
   }
 }
