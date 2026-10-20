@@ -76,5 +76,5 @@ if (open) {
   run('gh', ['pr', 'edit', open, '--title', title, '--body', body], coda);
   done(`同步 PR 已更新到 ${short(sha)}：${open}`, open);
 }
-const url = run('gh', ['pr', 'create', '-R', SLUG, '--base', 'main', '--head', BRANCH, '--title', title, '--body', body, '--ready'], coda).split('\n').at(-1);
+const url = run('gh', ['pr', 'create', '-R', SLUG, '--base', 'main', '--head', BRANCH, '--title', title, '--body', body], coda).split('\n').at(-1);
 done(`已开同步 PR：${url}`, url);
