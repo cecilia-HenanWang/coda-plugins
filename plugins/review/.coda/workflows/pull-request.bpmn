@@ -260,7 +260,10 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
       <sequenceFlow id="as-approved" sourceRef="standing" targetRef="merge">
         <conditionExpression xsi:type="tFormalExpression">=number(merge.at) > number(review.changesAt)</conditionExpression>
       </sequenceFlow>
-      <sequenceFlow id="ask" sourceRef="standing" targetRef="approve" />
+      <sequenceFlow id="ask" sourceRef="standing" targetRef="kinds" />
+      <!-- 批准卡只给项目有的部署、发布：项目在这个提交上没有这一类流程，就没有那个勾选项。 -->
+      <serviceTask id="kinds" name="看项目有哪些部署、发布" coda:action="workflow-kinds" />
+      <sequenceFlow id="kinds-known" sourceRef="kinds" targetRef="approve" />
 
       <userTask id="approve" name="批准合并" coda:assignee="user" coda:handback="false" coda:status="评审通过：等你批准合并">
         <documentation>PR #{{github.event.number}} 可以合并。
@@ -276,9 +279,9 @@ GitHub 上各项检查用 `gh pr checks {{github.event.pull_request.html_url}}` 
 「合并」以 {{vars.review.mergeMethod}} 方式合并提交 {{reviewing.head}}。GitHub 没合并（冲突、检查没过等）就交给开 PR 的会话处理，它推送的新版本评审通过后按这次的选择合并，不再问你；评审要求修改则这次批准作废。</documentation>
         <extensionElements>
           <coda:choice id="merge" name="合并" primary="true">
-            <coda:option id="deploy" name="部署" detail="调用项目里的部署流程" />
-            <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" />
-            <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" />
+            <coda:option id="deploy" name="部署" detail="调用项目里的部署流程" coda:shown="=kinds.deploy" />
+            <coda:option id="preview" name="发布预览版" detail="调用项目里的预览发布流程" coda:shown="=kinds.preview" />
+            <coda:option id="release" name="发布正式版" detail="调用项目里的正式发布流程" coda:shown="=kinds.release" />
             <coda:option id="notify" name="全部完成后通知 Agent" detail="合并及所选部署、发布结束后通知" />
           </coda:choice>
           <coda:choice id="send" name="让 Agent 处理评审意见" />
