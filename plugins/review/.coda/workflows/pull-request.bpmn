@@ -16,7 +16,7 @@
   <message id="edited" name="pull_request.edited" />
   <message id="closed" name="pull_request.closed" />
   <process id="pull-request" name="PR 生命流程" isExecutable="true"
-    coda:title="PR #{{github.event.number}}{{inputs.pr}} {{github.event.pull_request.title}}">
+    coda:title='PR {{if github.event.number = null then (if review.pr = null then inputs.pr else review.pr) else "#" + string(github.event.number) + " " + github.event.pull_request.title}}'>
     <extensionElements>
       <coda:input name="pr" label="PR" description="PR 编号或地址；不填就评审会话最近开的、这个仓库的 PR" />
       <coda:input name="focus" label="关注点" description="请评审方特别关注的内容" />
