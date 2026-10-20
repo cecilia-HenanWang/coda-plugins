@@ -27,12 +27,18 @@ const row = Object.keys(reviewers).filter(key => {
 if (!row) fail(`评审组合里没有适用于${session?.agent ? `「${[session.agent, session.model, session.effort].filter(Boolean).join(' · ')}」` : '这个会话'}的一行`);
 const reviewer = reviewers[row];
 
-// What is reviewed: the event's pull request, or the one asked for by hand, read with the project's own gh.
+// What is reviewed: the event's pull request, or the one asked for by hand, read with the project's own gh; none asked
+// for, the one the session opened last of this repository, as the GitHub plugin knows it (its command github-reported-pr,
+// where that plugin applies).
 const event = json('PULL_REQUEST', null), automatic = !!event?.head?.sha;
 let pr = event;
 if (!automatic) {
-  const asked = (process.env.PR ?? '').trim();
-  if (!asked) fail('没有指明要评审的 PR');
+  const reported = () => {
+    const found = spawnSync('github-reported-pr', [], { encoding: 'utf8', timeout: 60_000 });
+    return found.status === 0 ? found.stdout.trim() : '';
+  };
+  const asked = (process.env.PR ?? '').trim() || reported();
+  if (!asked) fail('没有指明要评审的 PR，会话也没有开过这个仓库的 PR');
   let view;
   try { view = JSON.parse(execFileSync('gh', ['pr', 'view', asked, '--json', 'number,url,title,body,headRefOid,headRefName,baseRefOid,baseRefName'], { encoding: 'utf8' })); }
   catch (e) { fail(`读不到 PR ${asked}：${e.stderr?.toString().trim() || e.message}`); }

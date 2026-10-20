@@ -233,8 +233,17 @@ describe('manifests Coda does not take', () => {
   });
   test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { menus: [] } } }, 'manifest.contributes'));
   test('a command Coda answers for itself, or one on two lines', async () => {
-    await manifestFails({ manifest: { contributes: { commands: [{ name: 'gh', command: 'exec gh' }] } } }, 'manifest.commands', /gh、coda-run/);
+    await manifestFails({ manifest: { contributes: { commands: [{ name: 'coda-event', command: 'exec true' }] } } }, 'manifest.commands', /coda-run、coda-event/);
     await manifestFails({ manifest: { contributes: { commands: [{ name: 'liar', command: 'a\nb' }] } } }, 'manifest.commands');
+  });
+  test('events it publishes: named in a domain of its own, once, whether they start and end their subject', async () => {
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { events: [{ name: 'deploy.started' }, { name: 'deploy.ended', starts: false, ends: true }] } } }), { manifestOnly: true });
+    assert.deepEqual(failed(report), []);
+    assert.match(report.items.find(item => item.rule === 'manifest.events').message, /deploy\.started、deploy\.ended/);
+    await manifestFails({ manifest: { contributes: { events: [{ name: 'session.ended' }] } } }, 'manifest.events', /workflow、session、user/);
+    await manifestFails({ manifest: { contributes: { events: [{ name: 'deploy' }] } } }, 'manifest.events');
+    await manifestFails({ manifest: { contributes: { events: [{ name: 'deploy.ended', ends: 'yes' }] } } }, 'manifest.events');
+    await manifestFails({ manifest: { contributes: { events: [{ name: 'deploy.ended' }, { name: 'deploy.ended' }] } } }, 'manifest.events');
   });
   test('a setup action with a key Coda does not read, or on two lines; services that repeat', async () => {
     await manifestFails({ manifest: { contributes: { setup: { command: 'exec true', title: '安装' } } } }, 'manifest.setup', /不支持的键：title/);
