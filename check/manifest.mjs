@@ -267,10 +267,11 @@ export function checkManifest(dir, say) {
   // Git names the top by its real path; so is the directory measured.
   const path = top ? relative(top, realpathSync(dir)).split(sep).filter(Boolean) : null;
   // A built-in plugin kept here, in its own place: Coda's copy of it comes from there, and so may a newer version.
-  const own = BUILTIN_HERE.includes(manifest.name) && path?.join('/') === `plugins/${manifest.name}` && remotes(top).some(url => BUILTIN_REPOSITORY.test(url));
+  const declaredId = manifest.id !== undefined ? manifest.id : manifest.name;
+  const own = BUILTIN_HERE.includes(declaredId) && path?.join('/') === `plugins/${declaredId}` && remotes(top).some(url => BUILTIN_REPOSITORY.test(url));
   const id = part('manifest.name', () => {
-    check(typeof manifest.name === 'string' && PLUGIN_ID.test(manifest.name), 'package.json 的 name 只能用小写字母、数字和「-」，以字母开头，至多 40 个字符');
-    return manifest.name;
+    check(typeof declaredId === 'string' && PLUGIN_ID.test(declaredId), `package.json 的 ${manifest.id !== undefined ? 'id' : 'name'} 只能用小写字母、数字和「-」，以字母开头，至多 40 个字符`);
+    return declaredId;
   }, name => `package.json 能读，插件 ID ${name}${own ? `（Coda 内置插件 ${name} 自己的来源：从这里装的新版本盖过 Coda 的内置副本）` : ''}`);
   const contributes = part('manifest.contributes', () => {
     check(manifest.contributes && typeof manifest.contributes === 'object' && !Array.isArray(manifest.contributes),
@@ -282,7 +283,7 @@ export function checkManifest(dir, say) {
     return manifest.contributes;
   }) ?? {};
   if (typeof manifest.version !== 'string') say.warn('manifest.version', 'package.json 没有 version：Coda 只认提交，version 只作显示，但安装确认里会空着');
-  const name = id ?? String(manifest.name);
+  const name = id ?? String(declaredId);
 
   const settings = part('manifest.settings', () => {
     const properties = contributes.configuration?.properties ?? {};
@@ -414,7 +415,10 @@ export function checkManifest(dir, say) {
     if (!deps?.length) return;
     for (const dep of deps) {
       const beside = join(dir, '..', dep);
-      try { if (JSON.parse(readFileSync(join(beside, 'package.json'), 'utf8')).name === dep) dependencies[dep] = realpathSync(beside); } catch {}
+      try {
+        const sibling = JSON.parse(readFileSync(join(beside, 'package.json'), 'utf8'));
+        if ((sibling.id !== undefined ? sibling.id : sibling.name) === dep) dependencies[dep] = realpathSync(beside);
+      } catch {}
     }
     const missing = deps.filter(d => !dependencies[d]);
     say.info('manifest.extensions', `依赖 ${deps.join('、')}：Coda 装它时先装它们（这台机器的插件，或同一提交里的兄弟目录），它的进程从 CODA_PLUGIN_DEPENDENCIES 拿到它们的目录${missing.length

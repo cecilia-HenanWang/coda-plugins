@@ -197,6 +197,18 @@ describe('manifests Coda does not take', () => {
     const { report } = await checkPlugin(plugin({ manifest: { name: 'machine-stats' } }), { manifestOnly: true });
     assertPasses(report, ['manifest.name']);
   });
+  test('a scoped npm package uses its explicit Coda ID for settings and agent ownership', async () => {
+    const { report, plugin: checked } = await checkPlugin(plugin({
+      manifest: { name: '@coda-console/claude', id: 'claude', contributes: {
+        configuration: { properties: { 'claude.enabled': { type: 'boolean', default: true } } } } },
+      agent: { id: 'claude-sdk' },
+    }), { manifestOnly: true });
+    assertPasses(report, ['manifest.name', 'manifest.settings', 'manifest.agents']);
+    assert.equal(checked.id, 'claude');
+    for (const id of ['', '@acme/board', 1, null]) {
+      await manifestFails({ manifest: { name: 'liar', id } }, 'manifest.name', /package.json 的 id/);
+    }
+  });
   test('a built-in agent ID', () => manifestFails({ agent: { id: 'claude-sdk' } }, 'manifest.agent-id', /内置插件 claude/));
   test('npm dependencies without a lock file', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } } }, 'source.npm', /没有 package-lock\.json/));
   test('a lock file that does not match the dependencies', () => manifestFails({ manifest: { dependencies: { left: '1.0.0' } },
@@ -290,7 +302,7 @@ describe('manifests Coda does not take', () => {
     const top = mkdtempSync(join(tmpdir(), 'coda-plugin-check-deps-')), dir = join(top, 'reader');
     temps.push(top);
     mkdirSync(join(top, 'base'));
-    writeFileSync(join(top, 'base/package.json'), JSON.stringify({ name: 'base', version: '1.0.0', contributes: {} }));
+    writeFileSync(join(top, 'base/package.json'), JSON.stringify({ name: '@acme/base', id: 'base', version: '1.0.0', contributes: {} }));
     mkdirSync(dir);
     const seen = join(top, 'seen.json');
     writeFileSync(join(dir, 'panel.mjs'), `import { writeFileSync } from 'node:fs';
