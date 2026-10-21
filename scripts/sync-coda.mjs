@@ -38,14 +38,15 @@ export function bumps(coda, available) {
     .map(([name, from]) => ({ name, field, from, to: available.get(name).version })));
 }
 // Coda's package.json with those versions, and the overrides they ask for in place of those their versions before asked
-// for (`before`: their manifests at those versions, by name; one not known drops none). Coda's own overrides stay, and
-// each in its place.
+// for (`before`: their manifests at those versions, by name, as npm has them; without one, what it asked for is not known
+// and nothing is written). Coda's own overrides stay, and each in its place.
 export function applied(coda, changes, available, before) {
   const next = structuredClone(coda);
-  for (const { name, field, to } of changes) {
+  for (const { name, field, from, to } of changes) {
+    if (!before.has(name)) throw new Error(`没有 ${name}@${from} 的清单，不知道它要过哪些 overrides`);
     next[field][name] = to;
     const asked = overridesOf(available.get(name));
-    for (const key of Object.keys(overridesOf(before.get(name) ?? {}))) if (!Object.hasOwn(asked, key)) delete next.overrides?.[key];
+    for (const key of Object.keys(overridesOf(before.get(name)))) if (!Object.hasOwn(asked, key)) delete next.overrides?.[key];
     if (Object.keys(asked).length) next.overrides = Object.assign(next.overrides ?? {}, asked);
   }
   if (next.overrides && !Object.keys(next.overrides).length) delete next.overrides;
@@ -64,6 +65,11 @@ const done = (line, pr = '') => {
   process.exit(0);
 };
 const fail = line => { console.error(line); process.exit(1); };
+// The manifest npm has of a version: what it was published with, overrides and the commit (`gitHead`) among them.
+function publishedManifest(spec) {
+  try { return JSON.parse(execFileSync('npm', ['view', spec, '--json', '--registry=https://registry.npmjs.org'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); }
+  catch (e) { fail(`读不到 npm 上 ${spec} 的清单，不知道它要过哪些 overrides，不同步：${(e.stderr || e.message).trim().split('\n')[0]}`); }
+}
 // Waits for `fn` to give something, asking every `every` ms for at most `limit` ms; null if it never does.
 async function until(fn, limit, every = 15_000) {
   for (const end = Date.now() + limit; ; await delay(every)) {
@@ -106,18 +112,22 @@ function sync() {
   if (open) run('git', ['fetch', '--quiet', 'origin', BRANCH], coda);
   const pending = open ? manifestAt('FETCH_HEAD') : null;
   if (open && !pending) fail(`同步 PR ${open} 的分支 ${BRANCH} 上读不到 ${MANIFEST}，不覆盖它`);
-  if (pending && !bumps(pending, mine).length) done(`同步 PR 已是 ${short(sha)} 的版本或更新的：${open}`, open);
+  if (pending && !bumps(pending, mine).length) {
+    // Its branch has these versions or later ones: its title and body are what that branch's commit says, said again in case
+    // the run that pushed it stopped before editing the pull request.
+    const [title, ...body] = run('git', ['log', '-1', '--format=%B', 'FETCH_HEAD'], coda).split('\n');
+    run('gh', ['pr', 'edit', open, '--title', title, '--body', body.join('\n').trim()], coda);
+    done(`同步 PR 已是 ${short(sha)} 的版本或更新的：${open}`, open);
+  }
 
-  // What each version before was published from says what it asked for, and what changed since.
+  // What each version before was published with says what it asked for, and from which commit what changed since.
   const before = new Map(), notes = [];
   for (const { name, from, to } of changes) {
-    const head = tried('npm', ['view', `${name}@${from}`, 'gitHead', '--registry=https://registry.npmjs.org']);
-    const path = mine.get(name).path, file = path ? `${path}/package.json` : 'package.json';
-    const old = head && tried('git', ['show', `${head}:${file}`], here);
-    if (old) before.set(name, JSON.parse(old));
+    const old = publishedManifest(`${name}@${from}`), path = mine.get(name).path;
+    before.set(name, old);
     // The check package is the root's bin/ and check/; a plugin, its directory.
     const files = path ? [path] : ['bin', 'check', 'package.json'];
-    const log = head ? (tried('git', ['log', '--format=%s', `${head}..${sha}`, '--', ...files], here) ?? '') : '';
+    const log = old.gitHead ? (tried('git', ['log', '--format=%s', `${old.gitHead}..${sha}`, '--', ...files], here) ?? '') : '';
     const lines = log.split('\n').filter(Boolean).map(subject => `  - ${subject.replace(/\(#(\d+)\)/g, `(${HERE_SLUG}#$1)`)}`);
     notes.push(`- \`${name}\` ${from} → ${to}`, ...lines);
   }
