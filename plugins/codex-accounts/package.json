@@ -1,8 +1,9 @@
 {
-  "name": "codex-accounts",
+  "name": "@coda-console/codex-accounts",
+  "id": "codex-accounts",
   "displayName": "Codex 多账号",
   "description": "在 Coda 内管理 Codex 账号：自动纳入已有登录，添加与移除账号、自动续期、查看额度和使用完全重置；接管 Codex 额度面板，所选账号在会话开始和两轮之间生效。",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "extensionDependencies": [
     "codex"
   ],
@@ -40,5 +41,17 @@
   },
   "dependencies": {
     "proper-lockfile": "4.1.2"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/codex-accounts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "scripts"
+  ]
 }

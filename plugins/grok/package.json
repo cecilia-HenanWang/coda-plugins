@@ -1,8 +1,9 @@
 {
-  "name": "grok",
+  "name": "@coda-console/grok",
+  "id": "grok",
   "displayName": "Grok",
   "description": "Grok Agent：适配运行机上 Grok CLI 的 ACP 与审批模式；资源页的「Grok」面板显示账号与额度，可从 Coda 安装和登录。",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "contributes": {
     "agents": [
       {
@@ -44,5 +45,19 @@
     "setup": {
       "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
     }
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/grok"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "agent",
+    "scripts",
+    "icons"
+  ]
 }

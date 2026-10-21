@@ -1,8 +1,9 @@
 {
-  "name": "codex",
+  "name": "@coda-console/codex",
+  "id": "codex",
   "displayName": "Codex",
   "description": "Codex Agent：Coda 自带的入口运行 codex-acp，报告子 Agent 与后台命令。额度与登录由账号来源插件接管；未接入账号来源时使用 Codex 自己的登录面板。",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "dependencies": {
     "@agentclientprotocol/codex-acp": "1.12.0",
     "@openai/codex": "0.162.1"
@@ -59,5 +60,19 @@
         "description": "Codex 的账号与登录入口：来源给出当前账号和令牌，响应 --login，并提供账号与额度面板；接入后 Codex 自带的额度面板隐藏。"
       }
     }
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/codex"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "agent",
+    "scripts",
+    "icons"
+  ]
 }

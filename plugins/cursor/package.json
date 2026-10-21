@@ -1,8 +1,9 @@
 {
-  "name": "cursor",
+  "name": "@coda-console/cursor",
+  "id": "cursor",
   "displayName": "Cursor",
   "description": "Cursor Agent：Coda 的入口在运行机的 Cursor CLI（cursor-agent acp）与 Coda 之间转发，并把会话指令放进原生会话的第一轮；每个会话一个进程。",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "contributes": {
     "agents": [
       {
@@ -29,5 +30,19 @@
     "setup": {
       "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
     }
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/cursor"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "agent",
+    "scripts",
+    "icons"
+  ]
 }

@@ -161,7 +161,8 @@ Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 
 
 **清单**（`package.json`）
 
-- `name` 是插件 ID：小写字母、数字和 `-`，以字母开头，至多 40 个字符。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。检查器不读取机器的安装状态，同名占用由 Coda 在读取来源和安装时检查。
+- `name` 是包名；另写 `id` 时以它为 Coda 插件 ID，否则以 `name` 为 ID。ID 只能用小写字母、数字和 `-`，以字母开头，至多 40 个字符。
+  本仓库的包名是 `@coda-console/<id>`，设置名与 Agent ID 仍使用原来的插件 ID。可以与 Coda 内置插件同名；从其他来源替换时，须先在目标机器卸载内置插件。检查器不读取机器的安装状态，同名占用由 Coda 在读取来源和安装时检查。
 - `displayName`、`description`、`version` 显示在安装确认与插件页。
 - `contributes` 只能有 Coda 认识的贡献：`agents`、`panels`、`configuration`、`capabilities`、`instructions`、`extensionPoints`、`extensions`、`groups`、`commands`、`services`、`setup`；读不懂的键一律报错，不会被悄悄忽略。
 - `setup` 是插件的设置动作：`{ "command": "…" }`，一行、不超过 4000 字（与面板命令同样的规则），没有别的键。
@@ -217,6 +218,31 @@ Agent 进程的环境是会话的环境再加插件进程的那组变量（面�
 命令的环境是后端的环境（不带会话 ID）加上插件进程的那组变量（同上），`PATH` 最前面是 Coda 后端的 `node`；`CODA_GROUPS_STATE` 是这一刻这个后端各并发组的占用与排队
 （`{now, groups}`）；动作另有 `CODA_PANEL_ARGS`（按钮的 `args`）。
 动作至多跑 10 分钟，成功后 Coda 立即重读面板。
+
+## npm 发布
+
+仓库根的 `@coda-console/plugin-check` 与 `plugins/*` 各自发布为公开 npm 包；包名带 scope，插件 ID 单独写在清单的 `id`。
+`repository.directory` 指向插件所在目录。Coda 必须先支持清单的 `id`，才能从改名后的仓库或 npm 读取这些插件。
+插件在仓库里的锁文件仍供 Git 来源安装与本仓库测试使用；npm 包不带 `package-lock.json`，从 npm 单独安装时按依赖声明解析，随 Coda 发的版本由 Coda 自己的锁文件固定。
+
+`.github/workflows/publish.yml` 在合入 main 或手动发起时检查测试、清单与 npm 包内容，然后逐包发布 npm 上尚不存在的版本。
+只有发布步骤有 `id-token: write`，由 GitHub 托管运行机通过 npm Trusted Publishing 鉴权并生成 provenance，不配置 npm 写令牌。
+查询 registry 失败会停下，只有明确的 404 才按未发布处理；已发布的版本跳过，修复失败后可重新运行同一个工作流。
+
+首次接入（或新增包）由组织维护者执行，要求 npm 11.15.0 以上、账号已启用 2FA，并有对应包的写权限：
+
+```sh
+npm login
+node scripts/publish-npm.mjs --dry-run   # 检查所有包实际会打入哪些文件，不发布
+node scripts/publish-npm.mjs --bootstrap
+gh workflow run publish.yml --repo coda-console/coda-plugins --ref main
+```
+
+先让 `publish.yml` 合入 main，再运行 bootstrap。它只给 npm 上还不存在的包发布 `0.0.0` 占位版（`bootstrap` 标签），
+逐包配置 GitHub 仓库 `coda-console/coda-plugins`、流程文件 `publish.yml`、允许 `npm publish`、不指定 environment。
+已有可信发布配置会显示出来供维护者核对，不自动覆盖。首次 2FA 验证可选择五分钟内不再询问，包与包之间停两秒以免限流。
+配置后立即发起上述 GitHub 工作流：npm 要求新配置在两天内完成第一次成功发布，由 CI 发布仓库里的实际版本并验证信任关系。
+确认 OIDC 发布成功后，在 npm 包设置的 Publishing access 中选择 Require two-factor authentication and disallow tokens。
 
 ## 契约检查
 
