@@ -20,23 +20,19 @@ templates/panel/         最小的面板插件：一张卡片、一条进度条�
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 docs/agent-protocol.md   Coda 接入协议正文的公开副本
-.coda/workflows/         本仓库自己的流程：sync-coda 把内置插件的副本同步进 Coda
 ```
 
 ## Coda 自带的插件
 
 `codex`、`claude`、`kimi`、`grok`、`opencode`、`codex-accounts`、`review` 是 Coda 内置的插件，源码从此在这里维护。
-Coda 仓库里的 `backend/src/resources/plugins/<id>/` 是本仓库**某个提交的只读副本**：Coda 的同步脚本按它的锁文件
-（记着本仓库的提交与每个目录的树哈希）把那个提交里的 `plugins/<id>` 原样复制过去，新机器、离线首启都带着它们。
+合进 main 后它们发布为 npm 包 `@coda-console/<id>`（[npm 发布](#npm-发布)），Coda 后端的 `package.json` 把它们写成钉住版本号的依赖，
+随后端的 `npm ci` 装好，新机器首次启动就带着它们。
 
-- **改它们先在这里提 PR、合并**，再在 Coda 里同步到那个提交；不要直接改 Coda 里的副本（Coda 的测试会核对副本与锁文件一致）。
-  同步由本仓库的部署流程 `sync-coda`（`.coda/workflows/sync-coda.bpmn`、`scripts/sync-coda.mjs`）做：合并时勾选「部署」，
-  它在合并提交上运行 Coda 的同步脚本，推到 Coda 的分支 `sync/coda-plugins` 并开 PR（开着的就只更新），PR 由开这边 PR 的会话负责、走 Coda 的 PR 流程；
-  副本没有变化就什么都不做。也可以单独发起，同步默认分支的最新提交。
+- **改它们先在这里提 PR、合并**，等发布流程发出新版本，再在 Coda 里把依赖升到那个版本（Coda 的 docs/development.md「coda-plugins 维护的内置插件」）。
 - **改了哪个插件就升哪个插件的 `version`**（`plugins/<id>/` 下任何文件，含 `package-lock.json`；只改 `test/` 不用）：Coda 的插件页与遥测按版本认插件。
   CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
-- Coda 的「检查更新」可以从这里装同一插件的新提交，盖过内置副本；只有本仓库的 `plugins/<id>` 这个来源能用这些名字。
-- 测的是插件自己代码的用例在 `test/plugins/<id>/`；把 Coda 与入口合在一起测的（启动 Coda 后端、写进 Coda 的存储）留在 Coda，对副本跑。
+- Coda 的「检查更新」可以从 npm 装同一个包的新版本，盖过 Coda 带的版本；只有 `@coda-console/<id>` 这个包能用这些名字。
+- 测的是插件自己代码的用例在 `test/plugins/<id>/`；把 Coda 与入口合在一起测的（启动 Coda 后端、写进 Coda 的存储）留在 Coda，对它装的 npm 包跑。
   `review` 是一个流程，要 Coda 的流程引擎才跑得起来，它的用例都在 Coda。
 
 | 插件 | npm 依赖（与 Coda 后端同版本） | 运行机上另要 |
@@ -88,7 +84,7 @@ Codex 用普通 ACP 选择型配置项 `service-tier`（「速度」）报告速
 
 `codex-accounts` 2.0.0 自己管理账号，不需要预装账号管理器或 Python。安装时 Coda 安装它的 npm 依赖和
 `codex` 插件；本版接管额度、登录入口和续期通知的配套入口是 `codex` 1.1.0。已有安装升级时两个插件一起更新，
-Coda 内置副本同步时也一起带上这两个目录。
+Coda 升级依赖时也一起升这两个包。
 
 - 首次使用会把运行机 `$CODEX_HOME/auth.json`（默认 `~/.codex/auth.json`）里的 ChatGPT 登录导入插件，作为第一个
   普通受控账号并默认选用。原文件保留；之后的凭据、续期与选择都由插件维护，原登录文件后续变化不会替换受控账号。
@@ -139,15 +135,15 @@ Coda 按这个通用类别显示「额度不足」，不触发服务故障重试
 Codex 会话、面板与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@openai/codex`；Claude 的是 `claude` 插件依赖的
 `@anthropic-ai/claude-agent-sdk`。插件按包名从自己的依赖里找它们，Coda 不另给路径。升级就是改这两个版本：
 Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 `package-lock.json` 一起改；合并后在 Coda「设置 › 插件」
-对该插件点「检查更新」，内置副本随 Coda 同步到新提交。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
-合并前用真实会话跑一轮。
+对该插件点「检查更新」，Coda 随后把依赖升到发布的新版本。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
+Coda 升 `@coda-console/codex` 时也要改它根上的同一条 overrides（npm 只认根的，Coda 的测试会核对）；合并前用真实会话跑一轮。
 
 ## 在 Coda 里安装
 
 「设置 › 插件 › 从仓库添加…」：
 
 1. **仓库**填 `coda-console/coda-plugins`（或 `https://github.com/coda-console/coda-plugins`）；**版本**留空是默认分支，也可以填分支、标签或完整的提交号。
-2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与两个模板。内置插件可以从自身来源单独更新；卸载后，也可以从其他来源安装同名替代插件。
+2. **读取**：Coda 拉取那个提交，把仓库根与两层以内 `package.json` 带 `contributes` 的目录各列成一个插件——这个仓库里是 `plugins/` 下的七个与两个模板。Coda 内置的那几个只能从 npm 上自己的包单独更新；在 Coda 里先卸载它，才能从这里装同名的。
 3. 选一个，确认里逐条列出它会运行的命令（Agent 的 `command`、面板的命令与动作），确认就是批准：这些命令以你的账户在空间里每台机器上运行，Coda 不做隔离，只装你信任的来源。
 
 **Coda 只认提交**：安装时钉在读取到的那个提交上，每台机器各自取同一个提交。「检查更新」用记下的仓库与版本再读一次，提交变了才有更新；

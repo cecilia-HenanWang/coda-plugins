@@ -136,11 +136,11 @@ export const DEPTH = 2;
 // `npm ci` in the plugin's version directory.
 export const NPM = ['dependencies', 'optionalDependencies'];
 export const NPM_LOCK = 'package-lock.json';
-// Those whose copies in Coda are taken from `plugins/<id>` of this repository (backend/src/resources/plugins.lock.json): a
-// version from the same repository and directory may be installed over a copy. Other sources may use the same ID once
-// the built-in plugin is uninstalled; only the target backend can check its installed state (builtinProblem).
-export const BUILTIN_HERE = ['claude', 'codex', 'codex-accounts', 'grok', 'kimi', 'opencode'];
-export const BUILTIN_REPOSITORY = /(^|[/:])coda-console\/coda-plugins(\.git)?\/?$/i;
+// Those kept in `plugins/<id>` here that Coda ships as npm dependencies, `@coda-console/<id>` (docs/plugins.md「内置插件的来源」):
+// a version of the same package may be installed over Coda's. Other sources may use the same ID once the built-in plugin is
+// uninstalled; only the target backend can check its installed state (builtinProblem).
+export const BUILTIN_HERE = ['claude', 'codex', 'codex-accounts', 'grok', 'kimi', 'opencode', 'review'];
+export const BUILTIN_SCOPE = '@coda-console/';
 // An agent, a concurrency group and a command are one plugin's (catalogProblem, claims). Those the built-in plugins declare, by
 // plugin; and `claude`, the agent ID sessions from before #1069 still store (docs/plugins.md「Agent」).
 export const BUILTIN_AGENTS = { 'claude-sdk': 'claude', codex: 'codex', grok: 'grok', kimi: 'kimi', opencode: 'opencode', claude: 'claude' };
