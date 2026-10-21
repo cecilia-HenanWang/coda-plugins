@@ -20,6 +20,7 @@ templates/panel/         最小的面板插件：一张卡片、一条进度条�
 bin/、check/             契约检查（仓库根的 package.json 就是它，@coda-console/plugin-check）
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 docs/agent-protocol.md   Coda 接入协议正文的公开副本
+.coda/workflows/         本仓库自己的流程：sync-coda 等新版本发到 npm，再给 Coda 开升级依赖的 PR
 ```
 
 ## Coda 自带的插件
@@ -28,7 +29,11 @@ docs/agent-protocol.md   Coda 接入协议正文的公开副本
 合进 main 后它们发布为 npm 包 `@coda-console/<id>`（[npm 发布](#npm-发布)），Coda 后端的 `package.json` 把它们写成钉住版本号的依赖，
 随后端的 `npm ci` 装好，新机器首次启动就带着它们。
 
-- **改它们先在这里提 PR、合并**，等发布流程发出新版本，再在 Coda 里把依赖升到那个版本（Coda 的 docs/development.md「coda-plugins 维护的内置插件」）。
+- **改它们先在这里提 PR、合并**，发布流程发出新版本后，再让 Coda 把依赖升到那个版本（Coda 的 docs/development.md「coda-plugins 维护的内置插件」）。
+  升依赖由本仓库的部署流程 `sync-coda`（`.coda/workflows/sync-coda.bpmn`、`scripts/sync-coda.mjs`）做：合并时勾选「部署」，它在合并提交上先等
+  `publish.yml` 跑完、npm 读得到这个提交的版本（发布失败就带着那次运行的地址失败），再把 Coda 用到的包升到这些版本（只升不降）、照抄插件的 `overrides`，
+  推到 Coda 的分支 `sync/coda-plugins` 并开 PR（开着的就只更新），PR 由开这边 PR 的会话负责、走 Coda 的 PR 流程；Coda 已是这些版本就什么都不做。
+  也可以单独发起，同步默认分支的最新提交。
 - **改了哪个插件就升哪个插件的 `version`**（`plugins/<id>/` 下任何文件，含 `package-lock.json`；只改 `test/` 不用）：Coda 的插件页与遥测按版本认插件。
   CI 在 PR 上运行 `node scripts/check-versions.mjs origin/<目标分支>` 核对；Dependabot 升 CLI、SDK 的 PR 也要补一个升版本的提交。
 - Coda 的「检查更新」可以从 npm 装同一个包的新版本，盖过 Coda 带的版本；只有 `@coda-console/<id>` 这个包能用这些名字。
@@ -135,8 +140,8 @@ Coda 按这个通用类别显示「额度不足」，不触发服务故障重试
 Codex 会话、面板与登录用的 Codex CLI 就是 `codex` 插件依赖的 `@openai/codex`；Claude 的是 `claude` 插件依赖的
 `@anthropic-ai/claude-agent-sdk`。插件按包名从自己的依赖里找它们，Coda 不另给路径。升级就是改这两个版本：
 Dependabot（`.github/dependabot.yml`）每周为它们各开一个 PR，连同 `package-lock.json` 一起改；合并后在 Coda「设置 › 插件」
-对该插件点「检查更新」，Coda 随后把依赖升到发布的新版本。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
-Coda 升 `@coda-console/codex` 时也要改它根上的同一条 overrides（npm 只认根的，Coda 的测试会核对）；合并前用真实会话跑一轮。
+对该插件点「检查更新」；合并时勾选「部署」，`sync-coda` 给 Coda 开升级依赖的 PR。升 `@openai/codex` 时 codex-acp 经 `overrides` 跟着用新版本，
+Coda 根上的同一条 overrides 由 `sync-coda` 一起改（npm 只认根的，Coda 的测试会核对）；合并前用真实会话跑一轮。
 
 ## 在 Coda 里安装
 

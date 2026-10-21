@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
-const newer = (a, b) => {
+export const newer = (a, b) => {
   const x = SEMVER.exec(a).slice(1, 4).map(Number), y = SEMVER.exec(b).slice(1, 4).map(Number);
   for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
   return false;
