@@ -53,7 +53,8 @@ describe('the plugins here', () => {
   for (const id of plugins) describe(`plugins/${id}`, () => {
     const dir = pluginDir(id), { dependencies = {}, optionalDependencies = {}, overrides = {}, extensionDependencies = [] } = manifest(id);
     const declared = Object.keys({ ...dependencies, ...optionalDependencies }).sort();
-    const theirs = extensionDependencies.flatMap(other => Object.keys(manifest(other).dependencies ?? {}));
+    // What a plugin it depends on brings, it may use too: of those here. One Coda ships itself (review's github) is not here.
+    const theirs = extensionDependencies.filter(other => plugins.includes(other)).flatMap(other => Object.keys(manifest(other).dependencies ?? {}));
     const used = [...new Set(files(dir).flatMap(file => packagesUsed(readFileSync(file, 'utf8'))))].filter(name => !theirs.includes(name)).sort();
 
     test('passes the checker\'s manifest level', async () => {

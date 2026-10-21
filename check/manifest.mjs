@@ -8,7 +8,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from '
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_REPOSITORY, CAPABILITY,
-  CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, CONTRIBUTES, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
+  CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, BUILTIN_ONLY, CONTRIBUTES, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
   SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT } from './coda.mjs';
 
 class Invalid extends Error {}
@@ -277,6 +277,8 @@ export function checkManifest(dir, say) {
       'contributes 须为对象（Coda 只把带 contributes 的目录当插件）');
     const unknown = Object.keys(manifest.contributes).filter(k => !CONTRIBUTES.includes(k));
     check(!unknown.length, `contributes 里有 Coda 不支持的贡献：${unknown.join('、')}`);
+    // What is checked here is installed from a repository or npm, never as a copy Coda ships.
+    for (const [key, refusal] of Object.entries(BUILTIN_ONLY)) check(manifest.contributes[key] === undefined, `contributes.${key}：${refusal}`);
     return manifest.contributes;
   }) ?? {};
   if (typeof manifest.version !== 'string') say.warn('manifest.version', 'package.json 没有 version：Coda 只认提交，version 只作显示，但安装确认里会空着');
