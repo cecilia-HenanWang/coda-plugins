@@ -243,6 +243,13 @@ describe('manifests Coda does not take', () => {
     const elsewhere = await check(repo('https://github.com/someone/coda-plugins', 'claude-sdk'));
     assert.deepEqual(failed(elsewhere), []);
   });
+  test('a built-in plugin is named as the package Coda ships it as; another of the same ID is not', async () => {
+    const said = async (name, id) => (await checkPlugin(plugin({ manifest: { name, id } }), { manifestOnly: true })).report.items
+      .find(item => item.rule === 'manifest.name').message;
+    assert.match(await said('@coda-console/review', 'review'), /Coda 内置插件 review：Coda 带的是 npm 上 @coda-console\/review 的一个版本/);
+    assert.doesNotMatch(await said('@someone/review', 'review'), /内置插件/);
+    assert.doesNotMatch(await said('@coda-console/liar', 'liar'), /内置插件/);
+  });
   test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { menus: [] } } }, 'manifest.contributes'));
   test('what only a plugin Coda ships may contribute', async () => {
     await manifestFails({ manifest: { contributes: { gitCredentials: [{ url: 'https://example.com', command: 'exec true' }] } } }, 'manifest.contributes', /Git 凭据/);

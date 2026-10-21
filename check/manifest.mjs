@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_REPOSITORY, CAPABILITY,
+import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_SCOPE, CAPABILITY,
   CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, BUILTIN_ONLY, CONTRIBUTES, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
   SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT } from './coda.mjs';
 
@@ -227,11 +227,6 @@ function files(dir) {
   walk('');
   return { top: null, entries };
 }
-// The addresses the repository at `top` is fetched from.
-function remotes(top) {
-  try { return execFileSync('git', ['-C', top, 'remote', '-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').map(l => l.split(/\s+/)[1]).filter(Boolean); }
-  catch { return []; }
-}
 // Why npm could not install from the lock file next to the manifest (`npm ci` refuses a lock that does not match; Coda's
 // manifestProblem refuses it first), or null.
 function lockProblem(dir, manifest) {
@@ -266,13 +261,13 @@ export function checkManifest(dir, say) {
   const { top, entries } = files(dir);
   // Git names the top by its real path; so is the directory measured.
   const path = top ? relative(top, realpathSync(dir)).split(sep).filter(Boolean) : null;
-  // A built-in plugin kept here, in its own place: Coda's copy of it comes from there, and so may a newer version.
+  // A built-in plugin as its package is named: Coda ships a version of that package, and a newer one may stand in for it.
   const declaredId = manifest.id !== undefined ? manifest.id : manifest.name;
-  const own = BUILTIN_HERE.includes(declaredId) && path?.join('/') === `plugins/${declaredId}` && remotes(top).some(url => BUILTIN_REPOSITORY.test(url));
+  const own = BUILTIN_HERE.includes(declaredId) && manifest.name === `${BUILTIN_SCOPE}${declaredId}`;
   const id = part('manifest.name', () => {
     check(typeof declaredId === 'string' && PLUGIN_ID.test(declaredId), `package.json 的 ${manifest.id !== undefined ? 'id' : 'name'} 只能用小写字母、数字和「-」，以字母开头，至多 40 个字符`);
     return declaredId;
-  }, name => `package.json 能读，插件 ID ${name}${own ? `（Coda 内置插件 ${name} 自己的来源：从这里装的新版本盖过 Coda 的内置副本）` : ''}`);
+  }, name => `package.json 能读，插件 ID ${name}${own ? `（Coda 内置插件 ${name}：Coda 带的是 npm 上 ${manifest.name} 的一个版本，这个包的新版本可以盖过它）` : ''}`);
   const contributes = part('manifest.contributes', () => {
     check(manifest.contributes && typeof manifest.contributes === 'object' && !Array.isArray(manifest.contributes),
       'contributes 须为对象（Coda 只把带 contributes 的目录当插件）');
