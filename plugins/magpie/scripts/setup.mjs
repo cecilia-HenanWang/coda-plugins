@@ -16,9 +16,14 @@ import { fileURLToPath } from 'node:url';
 // Magpie's own default 127.0.0.1:3425.
 export const GATEWAY = new URL(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).contributes.modelProviders[0].url).host;
 
-// Whether the gateway at `address` answers its model list.
-export async function answers(address, fetcher = fetch) {
-  try { return (await fetcher(`http://${address}/v1/models`, { signal: AbortSignal.timeout(3000) })).ok; } catch { return false; }
+// What answers at `address`: `gateway` for an OpenAI model list (`{ object: 'list', data: [...] }`, as Magpie's gateway serves
+// it), `other` for something else that answers the model list's path well (another app on the port), null for none.
+export async function answering(address, fetcher = fetch) {
+  let response;
+  try { response = await fetcher(`http://${address}/v1/models`, { signal: AbortSignal.timeout(3000) }); } catch { return null; }
+  if (!response.ok) return null;
+  const body = await response.json().catch(() => null);
+  return body?.object === 'list' && Array.isArray(body.data) ? 'gateway' : 'other';
 }
 
 const executable = path => { try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; } };
@@ -41,7 +46,9 @@ async function main() {
   // magpie, and the service it installs, take MAGPIE_ADDR: one elsewhere would serve where the model services do not point.
   if (process.env.MAGPIE_ADDR && process.env.MAGPIE_ADDR !== address)
     fail(`MAGPIE_ADDR=${process.env.MAGPIE_ADDR} 让 Magpie 网关不在 ${address}，而插件的模型服务指向那里：去掉它再安装`);
-  if (await answers(address)) { console.log(`Magpie 网关 http://${address}`); return; }
+  const found = await answering(address);
+  if (found === 'gateway') { console.log(`Magpie 网关 http://${address}`); return; }
+  if (found === 'other') fail(`${address} 上的服务不是 Magpie 网关（它的 /v1/models 不是模型列表）：先停掉它再安装`);
   let binary = magpieBinary();
   if (!binary || !versionOf(binary)) {
     const reason = binary ? `Magpie 无法运行（${binary}）` : '这台机器上没有 Magpie';
@@ -53,8 +60,8 @@ async function main() {
   }
   const daemon = spawnSync(binary, ['daemon', 'install'], { stdio: ['ignore', 2, 2], timeout: 120_000 });
   if (daemon.status !== 0) fail(`没能让 Magpie 网关常驻（magpie daemon install 退出码 ${daemon.status ?? daemon.signal}）`);
-  for (let i = 0; i < 30 && !(await answers(address)); i++) await delay(1000);
-  if (!(await answers(address))) fail(`Magpie 网关没有在 http://${address} 应答，见 magpie daemon status`);
+  for (let i = 0; i < 30 && await answering(address) !== 'gateway'; i++) await delay(1000);
+  if (await answering(address) !== 'gateway') fail(`Magpie 网关没有在 http://${address} 应答，见 magpie daemon status`);
   console.log(`Magpie ${versionOf(binary)}，网关 http://${address}`);
 }
 

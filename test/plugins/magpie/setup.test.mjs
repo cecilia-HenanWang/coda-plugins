@@ -11,9 +11,10 @@ import { manifest, pluginEnv, run } from '../command.mjs';
 import { pluginDir } from '../plugin.mjs';
 import { magpieBinary } from '../../../plugins/magpie/scripts/setup.mjs';
 
-// A gateway that answers its model list once `ready()` says so, and refuses until then.
-async function gateway(t, ready = () => true) {
-  const server = createServer((req, res) => { res.statusCode = ready() ? 200 : 503; res.end('{"object":"list","data":[]}'); });
+// A gateway that answers its model list once `ready()` says so, and refuses until then; or, given `page`, another app that
+// answers every path with it.
+async function gateway(t, ready = () => true, page = null) {
+  const server = createServer((req, res) => { res.statusCode = page || ready() ? 200 : 503; res.end(page ?? '{"object":"list","data":[]}'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   return `127.0.0.1:${server.address().port}`;
@@ -55,6 +56,13 @@ test('a MAGPIE_ADDR elsewhere is refused, even with a gateway answering there', 
   const ran = await setup(home, address, { MAGPIE_ADDR: elsewhere });
   assert.equal(ran.code, 1);
   assert.equal(ran.stderr.trim(), `MAGPIE_ADDR=${elsewhere} 让 Magpie 网关不在 ${address}，而插件的模型服务指向那里：去掉它再安装`);
+});
+
+test('another app answering on the gateway\'s port is not taken for the gateway', async t => {
+  const home = machine(t), address = await gateway(t, undefined, '<!doctype html><title>app</title>');
+  const ran = await setup(home, address);
+  assert.equal(ran.code, 1);
+  assert.equal(ran.stderr.trim(), `${address} 上的服务不是 Magpie 网关（它的 /v1/models 不是模型列表）：先停掉它再安装`);
 });
 
 test('the model services share one gateway, the one setup makes sure of', () => {
