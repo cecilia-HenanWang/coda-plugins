@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSessionLimits, accountHash } from './limits.mjs';
 import { sdkEnvironment } from './auth.mjs';
+import { chosenService, listedModels, serviceSettings } from './providers.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
 import { permissionRequest } from './permissions.mjs';
@@ -58,6 +59,8 @@ export class ClaudeSession {
   constructor({ sdk, env = process.env, environment = sdkEnvironment, initializationTimeoutMs = 60_000, onEnded = () => {} }) {
     Object.assign(this, { sdk, env, environment, initializationTimeoutMs, onEnded });
     this.phase = 'new'; this.input = new InputStream(); this.prompts = new Map(); this.withdrawals = new Set();
+    // The model service chosen in Coda (providers.mjs), and the model of it the query runs on: null on Claude's own.
+    this.service = chosenService(env); this.serviceModel = null;
     this.models = []; this.commands = []; this.terminal = null; this.current = { mode: 'default', model: undefined, effort: null };
     // Streamed text by API message, so that the complete message adds only what was not streamed; tool calls said.
     this.streams = new Map(); this.streamed = new Map(); this.tools = new Set(); this.children = new Set(); this.early = new Map(); this.compaction = null;
@@ -114,7 +117,8 @@ export class ClaudeSession {
       // Coda's servers are stdio ones; the SDK keys them by name.
       const servers = Object.fromEntries(mcpServers.filter(server => typeof server.command === 'string').map(({ name, command, args = [], env = [] }) =>
         [name, { command, args, ...(env.length ? { env: Object.fromEntries(env.map(variable => [variable.name, variable.value])) } : {}) }]));
-      this.query = this.sdk.query({ prompt: this.input, options: {
+      // What every query of the session starts with; a model of the chosen service runs in a query of its own (`reroute`).
+      this.launch = {
         // Skipping every approval is a mode the user may switch to later; the SDK refuses it unless allowed at start.
         permissionMode: 'default', allowDangerouslySkipPermissions: true, settingSources: ['user', 'project', 'local'],
         // Coda's session instructions (what its clients render, what the project's plugins say) follow Claude Code's own.
@@ -124,7 +128,6 @@ export class ClaudeSession {
         settings: { crossSessionInbound: 'refuse' },
         includePartialMessages: true, forwardSubagentText: true, cwd: dir,
         ...(Object.keys(servers).length ? { mcpServers: servers } : {}), ...(additionalDirectories.length ? { additionalDirectories } : {}),
-        ...(resume ? { resume } : { sessionId: this.sessionId }),
         // Claude Code reports running and idle only when asked: idle is what ends a task's wait.
         env: { ...environment, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
         // Stop supplies the complete list of scheduled wakeups. A CronCreate result alone cannot tell whether one was later
@@ -137,15 +140,12 @@ export class ClaudeSession {
         canUseTool: (toolName, input, context) => this.permission(toolName, input, context),
         onElicitation: (request, context) => this.elicitation(request, context),
         stderr: data => process.stderr.write(data),
-      } });
-      this.pump = this.consume();
-      let timer;
-      const initialization = await Promise.race([this.query.initializationResult(),
-        this.pump.then(() => { throw failure('Claude 会话在初始化时结束', -32001); }),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(failure('Claude 初始化超时', -32001)), this.initializationTimeoutMs); })])
-        .finally(() => clearTimeout(timer));
+      };
+      const listed = listedModels(this.service);
+      this.start(resume ? { resume } : { sessionId: this.sessionId });
+      const initialization = await this.initialized(), served = await listed;
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);
-      this.models = claudeModels(initialization.models); this.commands = initialization.commands ?? [];
+      this.models = [...claudeModels(initialization.models), ...served]; this.commands = initialization.commands ?? [];
       // Who the session runs as, for the「Claude」panel (limits.mjs): the windows it reports are that account's, and
       // only while the panel is of that account.
       const email = initialization.account?.email;
@@ -159,6 +159,49 @@ export class ClaudeSession {
       throw error instanceof RequestError ? error : failure(error?.message || 'Claude 会话启动失败');
     }
   }
+  // A query of the session, reading a prompt stream of its own: on Claude's own models, or on `model` of the chosen
+  // service, which it runs with that service as its API and that model for every role. One started after the session
+  // opened goes on with the model, mode and effort chosen.
+  start(at, model) {
+    this.input = new InputStream();
+    const entry = this.served(model);
+    const settings = { ...this.launch.settings, ...(this.current.effort ? { effortLevel: this.current.effort } : {}),
+      ...(entry ? serviceSettings(this.service, entry.model) : {}) };
+    this.serviceModel = entry ? model : null;
+    this.query = this.sdk.query({ prompt: this.input, options: { ...this.launch, ...at, settings,
+      ...(this.phase === 'running' ? { permissionMode: this.current.mode, model: entry ? entry.model : this.current.model } : {}) } });
+    this.pump = this.consume(this.query);
+  }
+  async initialized() {
+    let timer;
+    return Promise.race([this.query.initializationResult(),
+      this.pump.then(() => { throw failure('Claude 会话在初始化时结束', -32001); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(failure('Claude 初始化超时', -32001)), this.initializationTimeoutMs); })])
+      .finally(() => clearTimeout(timer));
+  }
+  // The model chosen is of another service than the query's (Claude's own, or the chosen service's): the session goes on in a
+  // query started for it, resuming what the last one said. Before a turn, as Coda sets a session's model before each.
+  async reroute() {
+    const previous = this.query;
+    this.query = null; this.input.close();
+    try { previous.close(); } catch {}
+    await this.pump;
+    if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    // One that cannot be started, or does not start, ends the session, as one that ends of itself does: no later turn waits on it.
+    try {
+      const said = await this.sdk.getSessionInfo(this.sessionId, { dir: this.cwd });
+      this.start(said ? { resume: this.sessionId } : { sessionId: this.sessionId }, this.current.model);
+      if (this.title) this.title.query = this.query;
+      await this.initialized();
+    } catch (error) {
+      this.end(this.query, error);
+      throw error instanceof RequestError ? error : failure(error?.message || 'Claude 会话启动失败');
+    }
+  }
+  // The chosen service's model that `model` is; null for one of Claude's own.
+  served(model) { return this.models.find(m => m.id === model && m.model) ?? null; }
+  // Whether the next turn runs in another query than this one: on the service's models, or back on Claude's own.
+  rerouted() { return (this.served(this.current.model)?.id ?? null) !== this.serviceModel; }
   async configure(configId, value) {
     if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
     if (configId === 'mode') {
@@ -166,7 +209,12 @@ export class ClaudeSession {
       await this.query.setPermissionMode(value); this.current.mode = value;
     } else if (configId === 'model') {
       if (!this.models.some(model => model.id === value)) throw failure('模型不可用', -32602);
-      await this.query.setModel(value); this.current.model = value;
+      // Between Claude's own models the query switches; to or from the service's, the next turn runs in another one, and
+      // what this one still runs would end with it.
+      const switching = (this.served(value)?.id ?? null) !== this.serviceModel;
+      if (switching && (this.prompts.size || this.waits.pending)) throw failure('后台任务、子 Agent 或定时唤醒还没结束，结束后才能换到这个模型', -32602);
+      if (!switching && !this.serviceModel) await this.query.setModel(value);
+      this.current.model = value;
       // An effort chosen for the last model that this one does not have is no choice of it: the model's own goes on.
       if (this.current.effort !== null && !this.models.find(model => model.id === value).efforts.includes(this.current.effort)) {
         await this.query.applyFlagSettings({ effortLevel: null }); this.current.effort = null;
@@ -179,8 +227,9 @@ export class ClaudeSession {
     return { configOptions: this.options() };
   }
   // Answered when the native result that names this input arrives; accepting it into the input says nothing yet.
-  prompt({ prompt }) {
+  async prompt({ prompt }) {
     if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
+    if (this.rerouted()) await (this.rerouting ??= this.reroute().finally(() => { this.rerouting = null; }));
     const id = randomUUID(), content = prompt.filter(block => block.type === 'text').map(block => block.text).join('\n');
     const answered = new Promise((resolve, reject) => this.prompts.set(id, { resolve, reject }));
     this.input.push({ type: 'user', uuid: id, session_id: this.sessionId, parent_tool_use_id: null, message: { role: 'user', content } });
@@ -222,23 +271,27 @@ export class ClaudeSession {
     } catch { return fallback; } finally { signal?.removeEventListener('abort', withdraw); this.withdrawals.delete(withdrawn); }
   }
 
-  async consume() {
+  async consume(query) {
     let error;
     try {
-      for await (const message of this.query) {
+      for await (const message of query) {
         try { this.receive(message); }
         catch (failed) { process.stderr.write(`Claude 消息处理失败：${failed.message}\n`); }
       }
     } catch (value) { if (this.phase !== 'closing') error = value; }
-    finally {
-      const intended = this.phase === 'closing';
-      this.phase = 'ended'; this.input.close();
-      for (const withdrawn of this.withdrawals) withdrawn.abort();
-      for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
-      this.prompts.clear();
-      try { this.query.close(); } catch {}
-      if (!intended) this.onEnded(error);
-    }
+    // The session ends with its query; one it moved off, for another model's, ends with nothing to say.
+    if (query === this.query) this.end(query, error);
+  }
+  // The session ends with its query: what waits on it is let go, and the entry told unless it was closing.
+  end(query, error) {
+    if (this.phase === 'ended') return;
+    const intended = this.phase === 'closing';
+    this.phase = 'ended'; this.input.close();
+    for (const withdrawn of this.withdrawals) withdrawn.abort();
+    for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
+    this.prompts.clear();
+    try { query?.close(); } catch {}
+    if (!intended) this.onEnded(error);
   }
   receive(m) {
     const parent = m.parent_tool_use_id ?? null;
@@ -257,8 +310,9 @@ export class ClaudeSession {
       case 'init': {
         if (m.session_id !== this.sessionId) return;
         this.terminal = m.terminal_slash_commands ?? [];
-        // Its effort is the one applied, the model's own included: what was chosen stays what it was.
-        this.current = { ...this.current, model: reportedModel(this.models, this.current.model, m.model), mode: m.permissionMode ?? this.current.mode };
+        // Its effort is the one applied, the model's own included: what was chosen stays what it was. A query on the
+        // service's model reports it by the service's name for it.
+        this.current = { ...this.current, model: this.serviceModel ?? reportedModel(this.models, this.current.model, m.model), mode: m.permissionMode ?? this.current.mode };
         if (!this.title) {
           const sessionId = this.sessionId;
           this.title = new SessionTitle({ sdk: this.sdk, query: this.query, cwd: this.cwd, sessionId, alive: () => ['starting', 'running'].includes(this.phase),

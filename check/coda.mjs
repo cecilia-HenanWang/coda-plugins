@@ -100,6 +100,11 @@ export const AGENT_ID = /^[a-z][a-z0-9-]{0,39}$/;
 export const PANEL_ID = /^[a-z][a-z0-9-]{0,63}$/;
 export const POINT = /^[a-z][a-z0-9-]{0,39}$/;
 export const SETTING_KEY = /^[a-z][a-z0-9-]*(\.[a-z][A-Za-z0-9]*)+$/;
+// The string formats a setting may have, beside `coda-agent` and `coda-agent-match` (backend/src/components/plugins/plugin-rules.mjs
+// STRING_FORMATS): a duration, a repository, a directory of the machine, a model service another plugin provides
+// (`<插件>/<服务>`, MODEL_PROVIDER), and the address of one.
+export const STRING_FORMATS = ['duration', 'coda-repo', 'coda-directory', 'coda-model-provider', 'coda-model-url'];
+export const MODEL_PROVIDER = /^[a-z][a-z0-9-]{0,39}\/[a-z][a-z0-9-]{0,39}$/;
 export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
 // What a plugin may contribute (backend/src/components/plugins/plugin-rules.mjs CONTRIBUTES); anything else is refused.
 export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands', 'gitCredentials',

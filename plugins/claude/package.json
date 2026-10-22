@@ -3,7 +3,7 @@
   "id": "claude",
   "displayName": "Claude",
   "description": "Claude SDK Agent：Coda 基于 Claude Agent SDK 写的 ACP 入口，一个进程一个 SDK 会话；资源页的「Claude」面板显示会话报告的额度，可从 Coda 登录。",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
     "@anthropic-ai/claude-agent-sdk": "0.3.296"
@@ -32,6 +32,18 @@
         "setupHint": "请在运行机配置 Claude SDK 认证；若指定了 token 文件，请检查路径和权限。"
       }
     ],
+    "configuration": {
+      "title": "Claude",
+      "properties": {
+        "claude.modelProvider": {
+          "type": "string",
+          "format": "coda-model-provider",
+          "title": "模型服务",
+          "order": 1,
+          "description": "选一个插件提供的模型服务（如 Magpie），它列出的模型和 Claude 自己的模型一起出现在会话的模型里；选中它的模型，那个会话就走这个服务，Claude 自己的模型照旧。只接 Anthropic 接口（anthropic-messages）的服务。"
+        }
+      }
+    },
     "panels": [
       {
         "id": "limits",

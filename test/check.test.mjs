@@ -287,6 +287,17 @@ describe('manifests Coda does not take', () => {
     for (const [spec, message] of refused)
       await manifestFails({ manifest: { contributes: { configuration: { properties: { 'liar.focus': spec } } } } }, 'manifest.settings', message);
   });
+  // docs/plugins.md「类型」: a repository, a directory, a model service and its address are texts of their own formats.
+  test('the string formats are taken as Coda takes them', async () => {
+    const properties = { 'liar.repo': { type: 'string', format: 'coda-repo' }, 'liar.dir': { type: 'string', format: 'coda-directory', default: '' },
+      'liar.service': { type: 'string', format: 'coda-model-provider', default: 'magpie/anthropic' }, 'liar.url': { type: 'string', format: 'coda-model-url' } };
+    const { report } = await checkPlugin(plugin({ manifest: { contributes: { configuration: { properties } } } }), { manifestOnly: true });
+    assertPasses(report, ['manifest.settings']);
+    const refused = [[{ type: 'integer', format: 'coda-model-provider' }, /是文本/], [{ type: 'string', format: 'coda-model-provider', default: 'magpie' }, /插件\/服务/],
+      [{ type: 'string', format: 'coda-directory', default: 'relative' }, /绝对目录/], [{ type: 'string', format: 'coda-unknown' }, /format 不受支持/]];
+    for (const [spec, message] of refused)
+      await manifestFails({ manifest: { contributes: { configuration: { properties: { 'liar.value': spec } } } } }, 'manifest.settings', message);
+  });
   test('a group with a key Coda does not read', () => manifestFails({ manifest: { contributes: { groups: [{ name: 'liar', capacity: 'liar.capacity', note: '' }],
     configuration: { properties: { 'liar.capacity': { type: 'integer', default: 1 } } } } } }, 'manifest.groups'));
   test("a built-in plugin's group or command", async () => {

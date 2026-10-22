@@ -21,6 +21,8 @@ export class ClaudeWaits {
     this.models = new Map(); this.outputs = new Map();
   }
   get handling() { return this.own.size > 0 || [...this.tasks.values(), ...this.crons.values()].some(w => w.state === 'handling'); }
+  // Whether anything is still waited on: what ends with the Claude process that runs it.
+  get pending() { return this.own.size > 0 || [...this.tasks.values(), ...this.crons.values()].some(w => open(w.state)); }
   report(wait, state, fields = {}) {
     wait.state = state;
     const params = { waitId: wait.waitId, state, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) };

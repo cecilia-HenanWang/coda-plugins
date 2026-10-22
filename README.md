@@ -82,6 +82,33 @@ CLI 不在或运行不了就用它自己的安装程序安装，低于插件要�
 Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 1.0.151（`opencode acp` 第一个报当前模型、恢复的会话能接着跑的版本：之前 `session/load` 不登记会话，下一轮报 Session not found）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
 Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作。
 
+### 模型服务
+
+Claude 与 Codex 各有一项设置「模型服务」（`claude.modelProvider`、`codex.modelProvider`，`format: coda-model-provider`），
+选一个别的插件提供的[模型服务](https://github.com/coda-console/coda/blob/main/docs/plugins.md#模型服务)，如 Magpie。
+只经会话进程的启动参数与按会话的覆盖生效，不改运行机上的 `~/.claude/settings.json`、`~/.codex/config.toml`；不选、或提供它的插件卸载了，与原来一样。
+
+- **接口**：Claude 只接 `anthropic-messages` 的服务，Codex 只接 `openai-responses` 的（Codex 0.162 已不接受 `wire_api = "chat"`）。
+  选了别的接口的服务，入口只在标准错误记一行，不列它的模型。
+- **模型**：会话打开时从服务的「地址/models」列出模型，问法同 Coda 的「检查可用模型」（Claude 带 `x-api-key`，Codex 带 `Authorization: Bearer`），
+  排在 Agent 自己的模型后面：ID 是 `<服务>/<模型>`（如 `magpie/anthropic/deepseek/deepseek-v4-pro`），名字是「<模型> (<服务标题>)」，没有推理强度可选。
+  列不出来时只有 Agent 自己的模型。
+- **何时换**：选模型只是记下（Coda 读模型目录时会把每个模型都选一遍，不该因此启动什么）；下一轮开始前，所选模型的服务与会话正在用的不同，才把会话换过去。
+- **Claude**：以 `resume` 新起一个 SDK 会话（还没说过话的会话用同一个会话 ID 新起），flag settings 的 `env` 设 `ANTHROPIC_BASE_URL`、
+  `ANTHROPIC_AUTH_TOKEN`（服务的 Key，没有 Key 写 `none`）与 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、
+  `CLAUDE_CODE_SUBAGENT_MODEL`（子 Agent、标题等后台调用也用这个模型）。运行机自己通往 API 的办法一样都不带过去：`ANTHROPIC_API_KEY`、
+  `CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_CUSTOM_HEADERS`、云服务商开关等置空，`apiKeyHelper` 置空（不然 API Key、helper 给的 Key 会作为 `x-api-key` 发给服务）。
+  flag settings 高于运行机与项目的 settings，它们 `env` 里的同名变量盖不过它；换回 Claude 自己的模型时新起的会话不带这些，运行机的配置照旧。
+  换回 Claude 自己的模型同样新起一个，不带这些；审批模式与推理强度沿用。还有后台任务、子 Agent 或定时唤醒没结束时，换到另一边的模型被拒绝（-32602），因为它们随原来的进程结束。
+  新起的那个起不来（SDK 当场报错、初始化失败或超时），这一轮失败，会话随即结束（同 SDK 会话自己结束），Coda 下次再打开它。
+- **Codex**：Codex 一个线程只绑一个模型 provider，所以照 codex-acp 处理 ACP `providers/set`、`providers/disable` 的办法：重启 app-server，
+  把服务作为它 OpenAI 槽位的 gateway（`model_providers.custom-gateway`，`wire_api = "responses"`，Key 放在 `Authorization` 头），再 resume 会话的线程；
+  换回 Codex 自己的模型时撤掉 gateway 再 resume。resume 带着会话打开时的 Coda 会话指令与 MCP 服务器，app-server 里的后台命令按 codex-acp 原有的做法报为停止。
+  换的过程中失败（重启的 app-server 起不来、resume 失败）时这一轮失败，下一轮从重启起重新换（会话在哪个 provider 上由入口自己记：
+  codex-acp 在 resume 之前就记下了 gateway，新 app-server 起不来时还留着已关闭的旧客户端，都不能拿来当换成了）。
+  一句话都还没说的线程 Codex 没有写下来，resume 不了：先以第一条消息（前 80 字）为名 `thread/name/set` 把它写下，这也就成了会话标题（不再由 Codex 生成）。
+  Codex 没有服务的模型的元数据，它为此发的「Model metadata … not found」与恢复时的「recorded with model …」提示不进会话。
+
 ### Grok 审批模式
 
 Grok 插件通过 ACP 提供原来的「自动审批」「全部放行」两个选项；新会话未选择时沿用运行机配置。
@@ -325,7 +352,7 @@ CI 先装各插件的依赖再跑全部测试，`plugins/*` 只查清单：真�
 
 MIT，见 [LICENSE](LICENSE)。各插件的品牌图形归各自权利人所有，来源写在插件的 `icons/README.md`。
 
-`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs` 在加载时给锁定版本的
+`plugins/codex/agent/` 里的 `relay.mjs`、`titles.mjs`、`network.mjs`、`process-exit.mjs`、`options.mjs`、`subagents.mjs`、`instructions.mjs`、`steering.mjs`、`providers.mjs` 在加载时给锁定版本的
 [codex-acp](https://github.com/agentclientprotocol/codex-acp)（Apache-2.0，Copyright 2025 JetBrains s.r.o.）打补丁，补丁里含 codex-acp 构建产物的原文片段。
 这些片段按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 使用，许可全文也随 npm 包装在 `node_modules/@agentclientprotocol/codex-acp/LICENSE`；
 codex-acp 本身作为 npm 依赖安装，不在本仓库里。
