@@ -1,0 +1,44 @@
+{
+  "name": "@coda-console/magpie",
+  "id": "magpie",
+  "displayName": "Magpie",
+  "description": "Magpie：把这台机器上的 Magpie 网关（127.0.0.1:3425）作为模型服务提供给 Pi 等插件选用，不用填地址和 Key；安装时没有 Magpie 就装上，并让网关常驻。",
+  "version": "1.0.0",
+  "contributes": {
+    "modelProviders": [
+      {
+        "id": "openai",
+        "title": "Magpie · OpenAI Chat",
+        "api": "openai-completions",
+        "url": "http://127.0.0.1:3425/v1"
+      },
+      {
+        "id": "responses",
+        "title": "Magpie · OpenAI Responses",
+        "api": "openai-responses",
+        "url": "http://127.0.0.1:3425/v1"
+      },
+      {
+        "id": "anthropic",
+        "title": "Magpie · Anthropic",
+        "api": "anthropic-messages",
+        "url": "http://127.0.0.1:3425"
+      }
+    ],
+    "setup": {
+      "command": "exec \"$CODA_NODE\" \"$CODA_PLUGIN_PATH/scripts/setup.mjs\""
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coda-console/coda-plugins.git",
+    "directory": "plugins/magpie"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "scripts"
+  ]
+}

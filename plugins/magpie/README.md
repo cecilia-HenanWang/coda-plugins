@@ -1,0 +1,36 @@
+# Magpie
+
+把 [Magpie](https://github.com/yetone/magpie) 的本机网关作为 Coda 的[模型服务](https://github.com/coda-console/coda/blob/main/docs/plugins.md#模型服务)提供出来，
+Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 自己管 provider、订阅账号和路由组，额度用完时自动换下一个账号。
+
+## 提供的模型服务
+
+网关在 `127.0.0.1:3425`，只在本机监听，不要 Key（随便填什么都行）。它讲三种接口，各提供一个服务：
+
+| 服务 | 接口 | 地址 |
+| --- | --- | --- |
+| `magpie/openai`（Magpie · OpenAI Chat） | `openai-completions` | `http://127.0.0.1:3425/v1` |
+| `magpie/responses`（Magpie · OpenAI Responses） | `openai-responses` | `http://127.0.0.1:3425/v1` |
+| `magpie/anthropic`（Magpie · Anthropic） | `anthropic-messages` | `http://127.0.0.1:3425` |
+
+模型列表来自网关的 `/models`，模型 ID 写作 `<Magpie 的 provider>/<模型>`（如 `deepseek/deepseek-v4-pro`），路由组是 `group/<id>`。
+接口之间的翻译（流式、工具调用、推理）由 Magpie 做，所以选哪个服务都能用全部模型；一般选 OpenAI Chat。
+
+在 Pi 里用：「设置 › 插件 › Pi › Provider」添加一行（行名如 `magpie`），「来源」选「Magpie · OpenAI Chat」，地址和 Key 都不用填。
+
+## 安装
+
+「设置 › 插件」的市场里选「Magpie」安装。插件的设置动作（`scripts/setup.mjs`）在你安装或更新插件时于每台机器上运行：
+
+1. 网关已经在应答（开着 Magpie 的 App，或已有它的常驻服务），什么都不动。
+2. 没有能运行的 `magpie`，用官方安装程序装上（`curl -fsSL https://usemagpie.ai/install.sh | sh`）：Mac 上把 magpie.app 放进 `/Applications`
+   （不可写时 `~/Applications`），命令链接到 `~/.local/bin/magpie`；Linux 上只装命令。已有的不动，Magpie 自己会更新。
+3. 运行 `magpie daemon install`，把网关装成你自己的常驻服务（Mac 是 launchd 的 `com.yetone.magpie.serve`，Linux 是 `systemctl --user` 的 `magpie`），
+   登录时启动、出错后重启；然后等网关应答。
+
+设置动作只认模型服务指向的 `127.0.0.1:3425`：后端的环境里设了指向别处的 `MAGPIE_ADDR`（magpie 和它装的服务都照它监听）时，设置动作直接报错，不安装。
+
+每台机器各跑自己的 Magpie，读的是这台机器上 Claude Code、Codex 等的登录（Magpie 的「订阅账号」，可在它的 Settings › Privacy 关掉）。
+provider 和账号在 Magpie 里加：Mac 打开 magpie.app，或在终端里 `magpie provider add …`、`magpie tui`。
+
+卸载插件不会卸掉 Magpie 和它的服务；要去掉就 `magpie daemon uninstall`，再删 App 与 `~/.local/bin/magpie`。

@@ -13,6 +13,15 @@
       "source": "./plugins/cursor"
     },
     {
+      "name": "magpie",
+      "displayName": "Magpie",
+      "description": "把这台机器上的 Magpie 网关作为模型服务提供给 Pi 等插件选用，不用填地址和 Key；安装时没有 Magpie 就装上，并让网关常驻。",
+      "version": "1.0.0",
+      "category": "模型与账号",
+      "tags": ["model-provider", "gateway"],
+      "source": "./plugins/magpie"
+    },
+    {
       "name": "pi",
       "displayName": "Pi",
       "description": "Pi Agent：把本机安装的 Pi coding agent 以 RPC 模式接入 Coda，支持会话指令、模型与推理强度选择、插话和会话恢复。",
