@@ -139,11 +139,13 @@ test('through the real entry: a turn on the service\'s model runs on the session
 
 test('through the real entry: a turn stopped while the session moves to the service ends cancelled, its input not given', async t => {
   // The move is held where it reads the thread, until the stop has come.
-  const { root, set, prompt, cancel, turns } = await entryOnService(t, { FAKE_CODEX_HOLD: 'thread/read' });
+  const { root, request, set, prompt, cancel, turns } = await entryOnService(t, { FAKE_CODEX_HOLD: 'thread/read' });
   await set('magpie/responses/fake/alpha');
   const stopped = prompt('hello');
   for (let i = 0; i < 400 && !existsSync(join(root, 'held')); i++) await delay(5);
-  cancel(); await delay(50);
+  // The entry reads what it is sent in order: a request answered after the stop says the stop was read before it.
+  cancel();
+  assert.equal((await request('coda/barrier', {})).error?.code, -32601);
   writeFileSync(join(root, 'release'), '');
   assert.equal((await stopped).result?.stopReason, 'cancelled');
   assert.equal(turns().length, 0, 'the input of a stopped turn is not given');
