@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { agent, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { ClaudeSessionLimits, accountHash } from './limits.mjs';
 import { sdkEnvironment } from './auth.mjs';
-import { chosenService, listedModels, serviceEnv } from './providers.mjs';
+import { chosenService, listedModels, serviceSettings } from './providers.mjs';
 import { SessionTitle } from './titles.mjs';
 import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from './models.mjs';
 import { permissionRequest } from './permissions.mjs';
@@ -166,7 +166,7 @@ export class ClaudeSession {
     this.input = new InputStream();
     const entry = this.served(model);
     const settings = { ...this.launch.settings, ...(this.current.effort ? { effortLevel: this.current.effort } : {}),
-      ...(entry ? { env: serviceEnv(this.service, entry.model) } : {}) };
+      ...(entry ? serviceSettings(this.service, entry.model) : {}) };
     this.serviceModel = entry ? model : null;
     this.query = this.sdk.query({ prompt: this.input, options: { ...this.launch, ...at, settings,
       ...(this.phase === 'running' ? { permissionMode: this.current.mode, model: entry ? entry.model : this.current.model } : {}) } });
@@ -187,11 +187,16 @@ export class ClaudeSession {
     try { previous.close(); } catch {}
     await this.pump;
     if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
-    const said = await this.sdk.getSessionInfo(this.sessionId, { dir: this.cwd });
-    this.start(said ? { resume: this.sessionId } : { sessionId: this.sessionId }, this.current.model);
-    if (this.title) this.title.query = this.query;
-    // One that does not start ends the session, as one that ends of itself does: no later turn waits on it.
-    try { await this.initialized(); } catch (error) { this.end(this.query, error); throw error; }
+    // One that cannot be started, or does not start, ends the session, as one that ends of itself does: no later turn waits on it.
+    try {
+      const said = await this.sdk.getSessionInfo(this.sessionId, { dir: this.cwd });
+      this.start(said ? { resume: this.sessionId } : { sessionId: this.sessionId }, this.current.model);
+      if (this.title) this.title.query = this.query;
+      await this.initialized();
+    } catch (error) {
+      this.end(this.query, error);
+      throw error instanceof RequestError ? error : failure(error?.message || 'Claude 会话启动失败');
+    }
   }
   // The chosen service's model that `model` is; null for one of Claude's own.
   served(model) { return this.models.find(m => m.id === model && m.model) ?? null; }
@@ -285,7 +290,7 @@ export class ClaudeSession {
     for (const withdrawn of this.withdrawals) withdrawn.abort();
     for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
     this.prompts.clear();
-    try { query.close(); } catch {}
+    try { query?.close(); } catch {}
     if (!intended) this.onEnded(error);
   }
   receive(m) {

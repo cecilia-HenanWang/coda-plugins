@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chosenService, listedModels, serviceEnv, serviceModels } from '../../../plugins/claude/agent/providers.mjs';
+import { chosenService, listedModels, serviceModels, serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 
 const provided = services => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }), CODA_MODEL_PROVIDERS: JSON.stringify(services) });
 const magpie = { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:3425' };
@@ -38,9 +38,11 @@ test('its models are listed as an Anthropic client asks, named by the model and 
   assert.deepEqual(await listedModels(null), []);
 });
 
-test('a session on a service\'s model runs Claude Code with the service as its API and that model for every role, never with the machine\'s login', () => {
-  assert.deepEqual(serviceEnv({ url: 'http://127.0.0.1:3425' }, 'deepseek/deepseek-v4-pro'), { ANTHROPIC_BASE_URL: 'http://127.0.0.1:3425', ANTHROPIC_AUTH_TOKEN: 'none',
-    ANTHROPIC_MODEL: 'deepseek/deepseek-v4-pro', ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek/deepseek-v4-pro', ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek/deepseek-v4-pro',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek/deepseek-v4-pro', CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek/deepseek-v4-pro' });
-  assert.equal(serviceEnv({ url: 'https://example.com', key: 'sk' }, 'm').ANTHROPIC_AUTH_TOKEN, 'sk');
+test('a session on a service\'s model runs Claude Code with the service as its API and that model for every role, none of the machine\'s credentials with it', () => {
+  const cleared = { ANTHROPIC_API_KEY: '', ANTHROPIC_CUSTOM_HEADERS: '', CLAUDE_CODE_OAUTH_TOKEN: '', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: '', CLAUDE_CODE_OAUTH_SCOPES: '',
+    CLAUDE_CODE_USE_BEDROCK: '', CLAUDE_CODE_USE_VERTEX: '', CLAUDE_CODE_USE_FOUNDRY: '' };
+  assert.deepEqual(serviceSettings({ url: 'http://127.0.0.1:3425' }, 'deepseek/deepseek-v4-pro'), { apiKeyHelper: '', env: { ...cleared,
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:3425', ANTHROPIC_AUTH_TOKEN: 'none', ANTHROPIC_MODEL: 'deepseek/deepseek-v4-pro', ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek/deepseek-v4-pro',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek/deepseek-v4-pro', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek/deepseek-v4-pro', CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek/deepseek-v4-pro' } });
+  assert.equal(serviceSettings({ url: 'https://example.com', key: 'sk' }, 'm').env.ANTHROPIC_AUTH_TOKEN, 'sk');
 });

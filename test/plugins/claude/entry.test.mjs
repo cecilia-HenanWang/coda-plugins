@@ -15,6 +15,7 @@ import { describeChange } from '../../../plugins/claude/agent/permissions.mjs';
 import { OTHER } from '../../../plugins/claude/agent/questions.mjs';
 import { nextRun } from '../../../plugins/claude/agent/waits.mjs';
 import { sdkEnvironment } from '../../../plugins/claude/agent/auth.mjs';
+import { serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 import { SessionTitle } from '../../../plugins/claude/agent/titles.mjs';
 import { ClaudeSessionLimits, accountHash } from '../../../plugins/claude/agent/limits.mjs';
 import { fixtureSdk, queries } from './fixture-sdk.mjs';
@@ -706,9 +707,7 @@ test('the chosen model service\'s models are listed beside Claude\'s own; a turn
   const second = queries.get(c.sessionId);
   assert.notEqual(second, first); assert.equal(first.closed, true);
   assert.deepEqual([second.options.resume, second.options.model, second.options.permissionMode], [c.sessionId, 'fake/alpha', 'default']);
-  assert.deepEqual(second.options.settings, { crossSessionInbound: 'refuse', env: { ANTHROPIC_BASE_URL: service.url, ANTHROPIC_AUTH_TOKEN: 'none',
-    ANTHROPIC_MODEL: 'fake/alpha', ANTHROPIC_DEFAULT_OPUS_MODEL: 'fake/alpha', ANTHROPIC_DEFAULT_SONNET_MODEL: 'fake/alpha',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'fake/alpha', CLAUDE_CODE_SUBAGENT_MODEL: 'fake/alpha' } });
+  assert.deepEqual(second.options.settings, { crossSessionInbound: 'refuse', ...serviceSettings({ url: service.url }, 'fake/alpha') });
   assert.equal(c.said().at(-1), 'hello');
   // Its init names the model as the service does: the session's model stays the service's.
   const model = () => c.updates().findLast(u => u.sessionUpdate === 'config_option_update').configOptions.find(o => o.id === 'model').currentValue;
@@ -771,4 +770,20 @@ test('a query for the service\'s model that does not start ends the session: the
   assert.deepEqual([ended, hung.closed], [1, true], 'the session ends, as one whose query ends of itself does');
   const refused = await c.prompt('again');
   assert.deepEqual([refused.error?.code, started], [-32001, 2], 'refused at once, no other query started');
+});
+
+test('a query for the service\'s model that cannot even be started ends the session, and the next turn is refused at once', async t => {
+  const service = await modelService(t);
+  const sdk = fixtureSdk(), make = sdk.query;
+  let started = 0, ended = 0;
+  // What the SDK throws as it builds the CLI's arguments from a model it cannot pass on.
+  sdk.query = options => { if (++started === 1) return make(options); throw new TypeError('args must be a string without null bytes'); };
+  const c = await setup(t, { env: service.env, sdk, onEnded: () => { ended++; } });
+  await c.open();
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+  const failed = await c.prompt('hello');
+  assert.deepEqual([failed.error?.code, failed.error?.message], [-32603, 'args must be a string without null bytes']);
+  assert.equal(ended, 1);
+  const refused = await c.prompt('again');
+  assert.deepEqual([refused.error?.code, started], [-32001, 2]);
 });

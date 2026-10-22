@@ -1,8 +1,9 @@
 // The model service chosen in Coda (`claude.modelProvider`, Coda's docs/plugins.md「模型服务」): another plugin's service that
 // speaks Anthropic Messages, from CODA_MODEL_PROVIDERS. The models its address lists (`<地址>/models`) join Claude's own, each
-// named by the service and the model; a session on one runs Claude Code with the service as its API (`serviceEnv`), set for
-// that session's process only.
+// named by the service and the model; a session on one runs Claude Code with the service as its API (`serviceSettings`), set
+// for that session's process only.
 import { readFileSync } from 'node:fs';
+import { authOverrides } from './auth.mjs';
 
 export const SETTING = 'claude.modelProvider';
 const log = text => process.stderr.write(`[claude-agent] ${text}\n`);
@@ -34,12 +35,14 @@ export async function serviceModels({ ref, title, url, key }, fetcher = fetch) {
     .map(model => ({ id: `${ref}/${model.id}`, name: `${model.id} (${title})`, efforts: [], model: model.id }));
 }
 
-// What Claude Code runs a service's model with, as flag settings' `env` (above the machine's and the project's settings):
-// the service as its API, a token of the service's own (`none` without one, so that the machine's Claude login is not
-// sent there), and the model for every role, subagents' and background work's included.
-export function serviceEnv({ url, key }, model) {
-  return { ANTHROPIC_BASE_URL: url, ANTHROPIC_AUTH_TOKEN: key ?? 'none', ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: model, ANTHROPIC_DEFAULT_HAIKU_MODEL: model, CLAUDE_CODE_SUBAGENT_MODEL: model };
+// The flag settings Claude Code runs a service's model with (above the machine's and the project's settings, its environment
+// beneath them): the service as its API, a token of the service's own (`none` without one), and the model for every role,
+// subagents' and background work's included. None of the machine's own ways to the API goes with it: an API key, a key
+// helper, an OAuth token or custom headers would be sent to the service, a cloud provider's would take the requests away.
+export function serviceSettings({ url, key }, model) {
+  return { apiKeyHelper: '', env: { ...Object.fromEntries(authOverrides.map(name => [name, ''])), ANTHROPIC_BASE_URL: url, ANTHROPIC_AUTH_TOKEN: key ?? 'none',
+    ANTHROPIC_MODEL: model, ANTHROPIC_DEFAULT_OPUS_MODEL: model, ANTHROPIC_DEFAULT_SONNET_MODEL: model, ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+    CLAUDE_CODE_SUBAGENT_MODEL: model } };
 }
 
 // The service's models, listed with Claude's own: none when it cannot list them now.
