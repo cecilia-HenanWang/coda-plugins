@@ -24,11 +24,11 @@ import { substituted } from '../substitute.mjs';
 const entry = fileURLToPath(new URL('../../../plugins/claude/agent/entry.mjs', import.meta.url));
 const fixture = fileURLToPath(new URL('./fixture-sdk.mjs', import.meta.url));
 async function until(fn) { for (let i = 0; i < 1000; i++) { const value = await fn(); if (value) return value; await delay(5); } throw new Error('Timed out'); }
-async function setup(t, { env = {}, sdk = fixtureSdk() } = {}) {
+async function setup(t, { env = {}, sdk = fixtureSdk(), ...options } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'coda-claude-entry-'));
   const out = [], answered = new Set();
   let inbox, next = 0;
-  const session = new ClaudeSession({ sdk, env: { ...process.env, ...env }, environment: value => ({ ...value }) });
+  const session = new ClaudeSession({ sdk, env: { ...process.env, ...env }, environment: value => ({ ...value }), ...options });
   session.connect({ readable: new ReadableStream({ start(controller) { inbox = controller; } }), writable: new WritableStream({ write(m) { out.push(m); } }) });
   t.after(async () => { await session.close(); await rm(cwd, { recursive: true, force: true }); });
   const send = message => inbox.enqueue({ jsonrpc: '2.0', ...message });
@@ -750,4 +750,25 @@ test('without a model service chosen, or with one that cannot list its models, t
   const models = (await c.open()).configOptions.find(o => o.id === 'model').options.map(o => o.value);
   assert.deepEqual(models, ['fixture-model-v1', 'other-model', 'fixture-model-v1[1m]', 'claude-custom-1']);
   assert.deepEqual(queries.get(c.sessionId).options.settings, { crossSessionInbound: 'refuse' });
+});
+
+test('a query for the service\'s model that does not start ends the session: the turn fails, and the next is refused rather than left waiting', async t => {
+  const service = await modelService(t);
+  const sdk = fixtureSdk(), make = sdk.query;
+  let started = 0, ended = 0;
+  // The second query (the service's) never says it is ready, nor reads what it is given, until it is closed.
+  let hung;
+  sdk.query = options => {
+    if (++started === 1) return make(options);
+    return hung = { closed: false, initializationResult: () => new Promise(() => {}), close() { this.closed = true; this.wake?.(); },
+      async *[Symbol.asyncIterator]() { await new Promise(resolve => { this.wake = resolve; }); } };
+  };
+  const c = await setup(t, { env: service.env, sdk, initializationTimeoutMs: 100, onEnded: () => { ended++; } });
+  await c.open();
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+  const failed = await c.prompt('hello');
+  assert.deepEqual([failed.error?.code, failed.error?.message], [-32001, 'Claude 初始化超时']);
+  assert.deepEqual([ended, hung.closed], [1, true], 'the session ends, as one whose query ends of itself does');
+  const refused = await c.prompt('again');
+  assert.deepEqual([refused.error?.code, started], [-32001, 2], 'refused at once, no other query started');
 });

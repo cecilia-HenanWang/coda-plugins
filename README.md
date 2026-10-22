@@ -98,9 +98,11 @@ Claude 与 Codex 各有一项设置「模型服务」（`claude.modelProvider`�
   `ANTHROPIC_AUTH_TOKEN`（服务的 Key；没有 Key 写 `none`，免得把运行机的 Claude 登录发给服务）与 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、
   `CLAUDE_CODE_SUBAGENT_MODEL`（子 Agent、标题等后台调用也用这个模型）。flag settings 高于运行机与项目的 settings，它们 `env` 里的同名变量盖不过它。
   换回 Claude 自己的模型同样新起一个，不带这些；审批模式与推理强度沿用。还有后台任务、子 Agent 或定时唤醒没结束时，换到另一边的模型被拒绝（-32602），因为它们随原来的进程结束。
+  新起的那个初始化失败或超时，这一轮失败，会话随即结束（同 SDK 会话自己结束），Coda 下次再打开它。
 - **Codex**：Codex 一个线程只绑一个模型 provider，所以照 codex-acp 处理 ACP `providers/set`、`providers/disable` 的办法：重启 app-server，
   把服务作为它 OpenAI 槽位的 gateway（`model_providers.custom-gateway`，`wire_api = "responses"`，Key 放在 `Authorization` 头），再 resume 会话的线程；
   换回 Codex 自己的模型时撤掉 gateway 再 resume。resume 带着会话打开时的 Coda 会话指令与 MCP 服务器，app-server 里的后台命令按 codex-acp 原有的做法报为停止。
+  resume 失败时这一轮失败，下一轮重新换（会话在哪个 provider 上由入口自己记，codex-acp 在 resume 之前就记下了 gateway，不能拿它当换成了）。
   一句话都还没说的线程 Codex 没有写下来，resume 不了：先以第一条消息（前 80 字）为名 `thread/name/set` 把它写下，这也就成了会话标题（不再由 Codex 生成）。
   Codex 没有服务的模型的元数据，它为此发的「Model metadata … not found」与恢复时的「recorded with model …」提示不进会话。
 

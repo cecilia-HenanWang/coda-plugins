@@ -190,7 +190,8 @@ export class ClaudeSession {
     const said = await this.sdk.getSessionInfo(this.sessionId, { dir: this.cwd });
     this.start(said ? { resume: this.sessionId } : { sessionId: this.sessionId }, this.current.model);
     if (this.title) this.title.query = this.query;
-    await this.initialized();
+    // One that does not start ends the session, as one that ends of itself does: no later turn waits on it.
+    try { await this.initialized(); } catch (error) { this.end(this.query, error); throw error; }
   }
   // The chosen service's model that `model` is; null for one of Claude's own.
   served(model) { return this.models.find(m => m.id === model && m.model) ?? null; }
@@ -273,8 +274,12 @@ export class ClaudeSession {
         catch (failed) { process.stderr.write(`Claude 消息处理失败：${failed.message}\n`); }
       }
     } catch (value) { if (this.phase !== 'closing') error = value; }
-    // A query the session moved off, for another model's, ends with nothing to say.
-    if (query !== this.query) return;
+    // The session ends with its query; one it moved off, for another model's, ends with nothing to say.
+    if (query === this.query) this.end(query, error);
+  }
+  // The session ends with its query: what waits on it is let go, and the entry told unless it was closing.
+  end(query, error) {
+    if (this.phase === 'ended') return;
     const intended = this.phase === 'closing';
     this.phase = 'ended'; this.input.close();
     for (const withdrawn of this.withdrawals) withdrawn.abort();

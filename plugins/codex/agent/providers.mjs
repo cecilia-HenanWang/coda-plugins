@@ -40,7 +40,9 @@ export async function serviceModels({ ref, title, url, key }, fetcher = fetch) {
 
 // One service a process (Coda runs one session a process), listed once, as its session opens.
 export class ServiceModels {
-  constructor(service = chosenService(), fetcher = fetch) { Object.assign(this, { service, fetcher }); this.models = []; }
+  // `on`: the service's address the session runs on, null on Codex's own (where it opens), undefined when a move to one or
+  // the other failed partway: codex-acp sets its gateway before the thread is resumed on it, so that is no sign of either.
+  constructor(service = chosenService(), fetcher = fetch) { Object.assign(this, { service, fetcher }); this.models = []; this.on = null; }
   list() {
     return this.listed ??= (!this.service ? Promise.resolve([]) : serviceModels(this.service, this.fetcher)
       .catch(e => { log(`模型服务 ${this.service.ref} 列不出模型：${e.message}`); return []; })).then(models => (this.models = models));
@@ -54,13 +56,15 @@ export class ServiceModels {
   async route(server, { sessionId, prompt }) {
     const state = server.sessions.get(sessionId);
     if (!state) return;
-    const served = this.served(state.currentModelId.replace(/\[[^\]]*\]$/, ''));
-    if ((server.codexAcpClient.gatewayConfig?.config.base_url ?? null) === (served ? this.service.url : null)) return;
+    const served = this.served(state.currentModelId.replace(/\[[^\]]*\]$/, '')), wanted = served ? this.service.url : null;
+    if (this.on === wanted) return;
     const client = server.codexAcpClient.appServerClient;
     const { thread } = await client.threadRead({ threadId: sessionId });
     if (thread.path && !existsSync(thread.path)) await client.threadSetName({ threadId: sessionId, name: firstWords(prompt) });
+    this.on = undefined;
     await carriedInstructions(() => served ? server.setProvider({ providerId: 'openai', apiType: 'openai', baseUrl: this.service.url,
       headers: this.service.key ? { Authorization: `Bearer ${this.service.key}` } : {} }) : server.disableProvider({ providerId: 'openai' }));
+    this.on = wanted;
   }
   // Codex knows nothing of the service's models: that it runs one on fallback metadata, or resumes a session last on one
   // with another model (Coda sets the session's model before each turn), is no news to say in the session.

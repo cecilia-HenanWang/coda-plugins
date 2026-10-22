@@ -67,7 +67,8 @@ test('the patch applies to the locked codex-acp, and fails loudly once it change
   assert.throws(() => servedCodexModels(bundle.replace('      model: modelId.model,\n      serviceTier\n', '      model: modelId.model,\n')), /no longer matches/);
 });
 
-test('through the real entry: a turn on the service\'s model runs on the session moved to the service, and one on Codex\'s own moves it back', async t => {
+// The real entry against the fixture app-server, with the service (listing `fake/alpha`, a key of its own) chosen.
+async function entryOnService(t, env = {}) {
   const root = mkdtempSync(join(tmpdir(), 'coda-codex-service-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const server = createServer((_, response) => { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: [{ id: 'fake/alpha' }] })); });
@@ -83,7 +84,7 @@ test('through the real entry: a turn on the service\'s model runs on the session
   const entry = fileURLToPath(new URL('../../../plugins/codex/agent/entry.mjs', import.meta.url));
   const child = spawn(process.execPath, [entry], { cwd: root, stdio: ['pipe', 'pipe', 'ignore'],
     env: pluginEnv('codex', { CODEX_PATH: codex, FAKE_CODEX_STATE: root, CODEX_HOME: join(root, 'home'),
-      ...provided({ 'magpie/responses': { ...magpie, url, keyFile: join(root, 'key') } }) }) });
+      ...provided({ 'magpie/responses': { ...magpie, url, keyFile: join(root, 'key') } }), ...env }) });
   t.after(() => child.kill('SIGKILL'));
   const out = [];
   let rest = '', next = 0;
@@ -98,19 +99,25 @@ test('through the real entry: a turn on the service\'s model runs on the session
     throw new Error(`${method} 没有回答`);
   };
   const read = name => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
-  const threads = () => read('threads.ndjson').filter(t => !t.params.ephemeral), turns = () => read('prompts.ndjson').filter(p => !p.outputSchema);
-
   await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   const opened = (await request('session/new', { cwd: root, mcpServers: [], systemPrompt: { mode: 'append', content: [{ type: 'text', text: '# Coda' }] } })).result;
+  return { url, opened, request,
+    set: value => request('session/set_config_option', { sessionId: opened.sessionId, configId: 'model', value }),
+    prompt: text => request('session/prompt', { sessionId: opened.sessionId, prompt: [{ type: 'text', text }] }),
+    // The session's own: not the ephemeral thread and structured turn codex-acp titles the session with.
+    threads: () => read('threads.ndjson').filter(t => !t.params.ephemeral), turns: () => read('prompts.ndjson').filter(p => !p.outputSchema) };
+}
+
+test('through the real entry: a turn on the service\'s model runs on the session moved to the service, and one on Codex\'s own moves it back', async t => {
+  const { url, opened, set, prompt, threads, turns } = await entryOnService(t);
   const models = opened.configOptions.find(o => o.category === 'model');
   assert.deepEqual(models.options.map(o => [o.value, o.name]), [['fake', 'Fake'], ['magpie/responses/fake/alpha', 'fake/alpha (Magpie · OpenAI Responses)']]);
-  const set = value => request('session/set_config_option', { sessionId: opened.sessionId, configId: 'model', value });
   const chosen = (await set('magpie/responses/fake/alpha')).result.configOptions;
   assert.equal(chosen.find(o => o.category === 'model').currentValue, 'magpie/responses/fake/alpha');
   assert.equal(chosen.find(o => o.category === 'thought_level'), undefined, 'no effort to choose');
   assert.deepEqual(threads().map(t => t.method), ['thread/start'], 'chosen, nothing moves yet');
   // Nothing said in the thread yet: it is named by what it is first told, then resumed on the service, with Coda's instructions.
-  assert.equal((await request('session/prompt', { sessionId: opened.sessionId, prompt: [{ type: 'text', text: '  hello\nthere ' }] })).result.stopReason, 'end_turn');
+  assert.equal((await prompt('  hello\nthere ')).result.stopReason, 'end_turn');
   const [named, moved] = threads().slice(1);
   assert.deepEqual([named.method, named.params.name], ['thread/name/set', 'hello there']);
   assert.deepEqual([moved.method, moved.params.threadId, moved.params.modelProvider, moved.params.developerInstructions], ['thread/resume', opened.sessionId, 'custom-gateway', '# Coda']);
@@ -118,12 +125,26 @@ test('through the real entry: a turn on the service\'s model runs on the session
     http_headers: { 'X-Client-Feature-ID': 'codex', Authorization: 'Bearer sk-service' } });
   assert.equal(turns().at(-1).model, 'fake/alpha', 'named as the service names it');
   // Another turn on it moves nothing; Codex's own model moves the session back to Codex's provider.
-  await request('session/prompt', { sessionId: opened.sessionId, prompt: [{ type: 'text', text: 'again' }] });
+  await prompt('again');
   assert.equal(threads().length, 3);
   await set('fake');
-  await request('session/prompt', { sessionId: opened.sessionId, prompt: [{ type: 'text', text: 'native' }] });
+  await prompt('native');
   const back = threads().at(-1);
   assert.deepEqual([threads().length, back.method, back.params.modelProvider, back.params.developerInstructions, back.params.config.model_providers],
     [4, 'thread/resume', 'openai', '# Coda', undefined]);
   assert.equal(turns().at(-1).model, 'fake');
+});
+
+test('through the real entry: a move whose resume fails fails its turn, and the next turn moves the session again', async t => {
+  const { set, prompt, threads, turns } = await entryOnService(t, { FAKE_CODEX_FAIL_ONCE: 'thread/resume' });
+  await set('magpie/responses/fake/alpha');
+  const failed = await prompt('hello');
+  assert.match(failed.error?.message ?? '', /Failed to resume 1 session/);
+  assert.equal(turns().length, 0, 'no turn on a thread not resumed');
+  assert.equal((await prompt('again')).result?.stopReason, 'end_turn');
+  assert.deepEqual(threads().filter(t => t.method === 'thread/resume').map(t => t.params.modelProvider), ['custom-gateway', 'custom-gateway']);
+  assert.equal(turns().at(-1).model, 'fake/alpha');
+  // Back on Codex's own after it: moved back as well.
+  await set('fake'); await prompt('native');
+  assert.deepEqual([threads().at(-1).params.modelProvider, turns().at(-1).model], ['openai', 'fake']);
 });

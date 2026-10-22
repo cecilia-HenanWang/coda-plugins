@@ -2,7 +2,9 @@
 // A minimal Codex app-server for driving the real codex-acp. The first turn of a state
 // directory dies mid-turn with exit code 0, as a terminated app-server does; later turns complete.
 // FAKE_CODEX_MODEL_ERROR instead returns a model-service error of that kind (`codexErrorInfo`) on that first turn.
-// FAKE_CODEX_RPC_ERROR_METHOD fails that native method before it starts, with FAKE_CODEX_RPC_ERROR as its explanation.
+// FAKE_CODEX_RPC_ERROR_METHOD fails that native method before it starts, with FAKE_CODEX_RPC_ERROR as its explanation;
+// FAKE_CODEX_FAIL_ONCE fails that method the first time it is asked in the state directory. A turn on a thread this
+// app-server has not started or resumed fails as Codex fails it: the thread is not loaded.
 // What thread/start, thread/resume and thread/name/set are asked goes to threads.ndjson in the state directory, each turn/start to
 // prompts.ndjson. The thread is written down (rollout.jsonl there, its `path`) once it is named or has a turn.
 // config/read gives the configured developer instructions from developer_instructions.txt there, when there is one.
@@ -12,6 +14,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs
 import { join } from 'node:path';
 
 const died = join(process.env.FAKE_CODEX_STATE, 'died'), rollout = join(process.env.FAKE_CODEX_STATE, 'rollout.jsonl');
+const failedOnce = join(process.env.FAKE_CODEX_STATE, 'failed-once');
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 const thread = { id: 'fake-thread', turns: [], historyMode: 'paginated' };
 const model = { id: 'fake', model: 'fake', displayName: 'Fake', description: '', isDefault: true, hidden: false,
@@ -26,7 +29,7 @@ const results = {
   'thread/resume': { ...session, turnsBackwardsCursor: null },
 };
 const command = { type: 'commandExecution', id: 'command-1', command: 'sleep 100', cwd: '/', processId: '4242', status: 'inProgress', commandActions: [], source: 'agent' };
-let terminals = [], instructions = '';
+let terminals = [], instructions = '', loaded = false;
 let buffer = '';
 process.stdin.on('data', chunk => {
   buffer += chunk;
@@ -41,6 +44,14 @@ process.stdin.on('data', chunk => {
     if (message.method === process.env.FAKE_CODEX_RPC_ERROR_METHOD && (message.method !== 'turn/start' || !existsSync(died))) {
       writeFileSync(died, '');
       send({ id: message.id, error: { code: -32603, message: process.env.FAKE_CODEX_RPC_ERROR } }); continue;
+    }
+    if (message.method === process.env.FAKE_CODEX_FAIL_ONCE && !existsSync(failedOnce)) {
+      writeFileSync(failedOnce, '');
+      send({ id: message.id, error: { code: -32603, message: `${message.method} failed` } }); continue;
+    }
+    if (['thread/start', 'thread/resume'].includes(message.method) && !message.params.ephemeral) loaded = true;
+    if (message.method === 'turn/start' && !message.params.outputSchema && !loaded) {
+      send({ id: message.id, error: { code: -32600, message: `thread not loaded: ${message.params.threadId}` } }); continue;
     }
     if (message.method === 'thread/backgroundTerminals/list') { send({ id: message.id, result: { data: terminals, nextCursor: null } }); continue; }
     if (message.method === 'thread/backgroundTerminals/terminate') {
