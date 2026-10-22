@@ -743,6 +743,27 @@ test('a session with nothing said yet starts afresh on the service\'s model, and
   await c.prompt('next'); assert.equal(queries.get(c.sessionId), running);
 });
 
+test('a turn stopped while the session moves to the service\'s query ends cancelled, its input not given', async t => {
+  const service = await modelService(t);
+  const sdk = fixtureSdk(), info = sdk.getSessionInfo;
+  // The move waits on the session's transcript being read; held until the stop has come.
+  let release, asked;
+  const reading = new Promise(resolve => { asked = resolve; });
+  sdk.getSessionInfo = (...args) => { asked(); return new Promise(resolve => { release = () => resolve(info(...args)); }); };
+  const c = await setup(t, { env: service.env, sdk });
+  await c.open();
+  await c.request('session/set_config_option', { sessionId: c.sessionId, configId: 'model', value: 'magpie/anthropic/fake/alpha' });
+  const stopped = c.prompt('hello');
+  await reading;
+  c.send({ method: 'session/cancel', params: { sessionId: c.sessionId } });
+  await delay(50); release();
+  assert.deepEqual((await stopped).result, { stopReason: 'cancelled' });
+  assert.equal(c.said().includes('hello'), false, 'the input of a stopped turn is not given');
+  // The next turn runs on the service's query, as chosen.
+  assert.deepEqual((await c.prompt('again')).result, { stopReason: 'end_turn' });
+  assert.equal(queries.get(c.sessionId).options.model, 'fake/alpha');
+});
+
 test('without a model service chosen, or with one that cannot list its models, the session has Claude\'s own alone', async t => {
   const c = await setup(t, { env: { CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }),
     CODA_MODEL_PROVIDERS: JSON.stringify({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:1' } }) } });
