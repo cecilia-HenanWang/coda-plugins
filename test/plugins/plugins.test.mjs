@@ -117,7 +117,8 @@ describe('the plugins here', () => {
   const ready = { kimi: ['.kimi-code/bin/kimi', 'kimi 2.1.1', 'Kimi CLI 2.1.1'], grok: ['.grok/bin/grok', 'grok 1.0.52', 'Grok CLI 1.0.52'],
     opencode: ['.opencode/bin/opencode', '1.19.0', 'OpenCode CLI 1.19.0'], cursor: ['.local/bin/cursor-agent', '2026.05.09-0afadcc', 'Cursor CLI 2026.05.09-0afadcc'] };
   test('a setup, run as Coda runs it, ends well and installs nothing when the machine\'s CLI is recent enough', async t => {
-    assert.deepEqual(plugins.filter(id => manifest(id).contributes.setup).sort(), Object.keys(ready).sort(), 'codex and claude bring theirs as npm dependencies');
+    // Magpie's makes sure of a gateway, not a CLI's version: test/plugins/magpie/.
+    assert.deepEqual(plugins.filter(id => manifest(id).contributes.setup && id !== 'magpie').sort(), Object.keys(ready).sort(), 'codex and claude bring theirs as npm dependencies');
     for (const [id, [binary, says, line]] of Object.entries(ready)) {
       const home = mkdtempSync(join(tmpdir(), `coda-${id}-setup-`));
       t.after(() => rmSync(home, { recursive: true, force: true }));
