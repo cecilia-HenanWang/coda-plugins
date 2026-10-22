@@ -21,7 +21,21 @@ bin/、check/             契约检查（仓库根的 package.json 就是它，@
 test/                    检查包的测试；test/plugins/ 是各插件的测试（插件目录里只放运行要用的文件）
 docs/agent-protocol.md   Coda 接入协议正文的公开副本
 .coda/workflows/         本仓库自己的流程：sync-coda 等新版本发到 npm，再给 Coda 开升级依赖的 PR
+.claude-plugin/          官方市场的索引 marketplace.json，见「官方市场」
 ```
+
+## 官方市场
+
+`.claude-plugin/marketplace.json` 是 Coda 的官方市场（Coda 的 docs/plugins.md「市场」）：格式照搬 Claude Code 的
+[marketplace.json](https://code.claude.com/docs/en/plugins/marketplace-reference)，Coda 新装时就登记了它，插件页的「商店」从这里列出可以装的插件。
+它列不随 Coda 发布、维护者推荐的插件：本仓库里的（`./plugins/<id>`），以及别的公开仓库或 npm 包。随 Coda 发布的那几个在 Coda 自带的市场里，这里不重复列。
+
+- **加一个插件**就是在 `plugins` 里加一个条目：`name` 是插件 ID，写 `displayName`、`description`、`category`、`tags` 与 `source`。
+  来源可以是 `./plugins/<id>`、`{ "source": "github", "repo": "owner/repo" }`、`{ "source": "git-subdir", "url": "owner/repo", "path": "<目录>" }`
+  或 `{ "source": "npm", "package": "<包名>" }`；Coda 不装 `archive`、`command` 来源，也不认版本范围。
+- **分类**只用这几个，Coda 的插件页按它分组：`Agent`、`模型与账号`、`工作流程`、`机器与资源`、`Skills 与工具`。
+- **本仓库里的插件**条目要写 `version`，与它清单里的一样：Coda 按条目的版本标「可更新」。升插件版本时一起改。
+- `npm test` 里的 `test/check-marketplace.test.mjs` 用 `scripts/check-marketplace.mjs` 核对上面几条（CI 跑 `npm test`），本地也可以直接运行这个脚本。
 
 ## Coda 自带的插件
 
