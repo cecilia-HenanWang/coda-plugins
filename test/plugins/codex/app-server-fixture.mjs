@@ -7,7 +7,8 @@
 // directory, across the app-servers started there. A turn on a thread this app-server has not started or resumed fails as
 // Codex fails it: the thread is not loaded.
 // What thread/start, thread/resume and thread/name/set are asked goes to threads.ndjson in the state directory, each turn/start to
-// prompts.ndjson. The thread is written down (rollout.jsonl there, its `path`) once it is named or has a turn.
+// prompts.ndjson. FAKE_CODEX_HOLD=thread/read holds the answer to thread/read, saying so by `held` in the state directory,
+// until `release` is there. The thread is written down (rollout.jsonl there, its `path`) once it is named or has a turn.
 // config/read gives the configured developer instructions from developer_instructions.txt there, when there is one.
 // A later turn whose input names `subagent` runs a subagent that answers and ends; one that names `background` leaves a
 // command in the background, listed until it is terminated.
@@ -41,7 +42,14 @@ process.stdin.on('data', chunk => {
     if (['thread/start', 'thread/resume'].includes(message.method) && !message.params.ephemeral) instructions = message.params.developerInstructions ?? '';
     if (['thread/start', 'thread/resume', 'thread/name/set'].includes(message.method)) appendFileSync(join(process.env.FAKE_CODEX_STATE, 'threads.ndjson'), JSON.stringify({ method: message.method, params: message.params }) + '\n');
     if (['thread/name/set', 'turn/start'].includes(message.method)) appendFileSync(rollout, '');
-    if (message.method === 'thread/read') { send({ id: message.id, result: { thread: { ...thread, path: rollout } } }); continue; }
+    if (message.method === 'thread/read') {
+      const answer = () => send({ id: message.id, result: { thread: { ...thread, path: rollout } } });
+      if (process.env.FAKE_CODEX_HOLD !== 'thread/read') { answer(); continue; }
+      const state = process.env.FAKE_CODEX_STATE;
+      writeFileSync(join(state, 'held'), '');
+      const held = setInterval(() => { if (existsSync(join(state, 'release'))) { clearInterval(held); answer(); } }, 10);
+      continue;
+    }
     if (message.method === process.env.FAKE_CODEX_RPC_ERROR_METHOD && (message.method !== 'turn/start' || !existsSync(died))) {
       writeFileSync(died, '');
       send({ id: message.id, error: { code: -32603, message: process.env.FAKE_CODEX_RPC_ERROR } }); continue;
