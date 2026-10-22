@@ -51,11 +51,19 @@ export class ServiceModels {
   served(model) { return this.models.find(m => m.id === model) ?? null; }
   // What a turn names to Codex: the service's own name for one of its models.
   wire(model) { return this.served(model)?.model ?? model; }
+  // A stop that comes while a turn waits on the move has no turn of codex-acp's to interrupt yet: it is the waiting turn's,
+  // which ends cancelled with its input not given (`route` says so).
+  cancel(sessionId) { if (this.moving === sessionId) this.stopped = true; }
+  async route(server, params) {
+    this.moving = params.sessionId; this.stopped = false;
+    try { await this.move(server, params); } finally { this.moving = null; }
+    return this.stopped;
+  }
   // Before a turn of codex-acp's `server`: the session on the provider of its model, its thread resumed with Coda's
   // instructions as it was opened. A thread nothing was said in yet is not written down, and would not be resumed after the
   // restart: naming it, by what it is first told, writes it. A move that failed is made again from the restart, on which
   // codex-acp has a client again; the thread was written down before it.
-  async route(server, { sessionId, prompt }) {
+  async move(server, { sessionId, prompt }) {
     const state = server.sessions.get(sessionId);
     if (!state) return;
     const served = this.served(state.currentModelId.replace(/\[[^\]]*\]$/, '')), wanted = served ? this.service.url : null;
@@ -85,7 +93,10 @@ const patches = [
   ['    } while (cursor);\n    return models;\n  }', '    } while (cursor);\n    return [...models, ...await codaServices.list()];\n  }', 1],
   // A turn first moves the session to the provider of its model, and names the model as that provider does.
   ['  async prompt(params, signal, onTurnStarted) {\n    if (this.providerUpdate !== null) {',
-    '  async prompt(params, signal, onTurnStarted) {\n    await codaServices.route(this, params);\n    if (this.providerUpdate !== null) {', 1],
+    '  async prompt(params, signal, onTurnStarted) {\n    if (await codaServices.route(this, params)) return { stopReason: "cancelled" };\n    if (this.providerUpdate !== null) {', 1],
+  // A stop while the session moves is the moving turn's.
+  ['  async cancel(params) {\n    const sessionState = this.sessions.get(params.sessionId);',
+    '  async cancel(params) {\n    codaServices.cancel(params.sessionId);\n    const sessionState = this.sessions.get(params.sessionId);', 1],
   ['      model: modelId.model,\n      serviceTier\n    }, onTurnStarted);', '      model: codaServices.wire(modelId.model),\n      serviceTier\n    }, onTurnStarted);', 1],
   ['      case "warning":\n        return this.createWarningEvent(notification.params);',
     '      case "warning":\n        if (codaServices.quiet(notification.params)) return null;\n        return this.createWarningEvent(notification.params);', 1],

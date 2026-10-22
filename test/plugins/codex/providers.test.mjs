@@ -60,7 +60,8 @@ test('what Codex says of the service\'s models it does not know is not said in t
 test('the patch applies to the locked codex-acp, and fails loudly once it changes', () => {
   const served = servedCodexModels(bundle);
   assert.ok(served.startsWith('import { services as codaServices } from '), 'its own executable header gone');
-  for (const added of ['return [...models, ...await codaServices.list()];', 'await codaServices.route(this, params);', 'model: codaServices.wire(modelId.model),',
+  for (const added of ['return [...models, ...await codaServices.list()];', 'if (await codaServices.route(this, params)) return { stopReason: "cancelled" };',
+    'codaServices.cancel(params.sessionId);', 'model: codaServices.wire(modelId.model),',
     'if (codaServices.quiet(notification.params)) return null;']) assert.equal(served.split(added).length, 2, added);
   const checked = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: served, encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stderr);
@@ -101,7 +102,8 @@ async function entryOnService(t, env = {}) {
   const read = name => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
   await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   const opened = (await request('session/new', { cwd: root, mcpServers: [], systemPrompt: { mode: 'append', content: [{ type: 'text', text: '# Coda' }] } })).result;
-  return { url, opened, request,
+  return { url, root, opened, request,
+    cancel: () => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: opened.sessionId } })}\n`),
     set: value => request('session/set_config_option', { sessionId: opened.sessionId, configId: 'model', value }),
     prompt: text => request('session/prompt', { sessionId: opened.sessionId, prompt: [{ type: 'text', text }] }),
     // The session's own: not the ephemeral thread and structured turn codex-acp titles the session with.
@@ -133,6 +135,20 @@ test('through the real entry: a turn on the service\'s model runs on the session
   assert.deepEqual([threads().length, back.method, back.params.modelProvider, back.params.developerInstructions, back.params.config.model_providers],
     [4, 'thread/resume', 'openai', '# Coda', undefined]);
   assert.equal(turns().at(-1).model, 'fake');
+});
+
+test('through the real entry: a turn stopped while the session moves to the service ends cancelled, its input not given', async t => {
+  // The move is held where it reads the thread, until the stop has come.
+  const { root, set, prompt, cancel, turns } = await entryOnService(t, { FAKE_CODEX_HOLD: 'thread/read' });
+  await set('magpie/responses/fake/alpha');
+  const stopped = prompt('hello');
+  for (let i = 0; i < 400 && !existsSync(join(root, 'held')); i++) await delay(5);
+  cancel(); await delay(50);
+  writeFileSync(join(root, 'release'), '');
+  assert.equal((await stopped).result?.stopReason, 'cancelled');
+  assert.equal(turns().length, 0, 'the input of a stopped turn is not given');
+  assert.equal((await prompt('again')).result?.stopReason, 'end_turn');
+  assert.equal(turns().at(-1).model, 'fake/alpha', 'the next turn runs on the service');
 });
 
 test('through the real entry: a move whose resume fails fails its turn, and the next turn moves the session again', async t => {
