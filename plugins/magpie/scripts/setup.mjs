@@ -6,14 +6,15 @@
 // Mac, systemd --user on Linux), started at login and again after a failure. Magpie updates itself, so one that runs is
 // kept as it is. Why the machine is not ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-// Where the gateway listens: Magpie's own default, or MAGPIE_ADDR as magpie itself takes it.
-export const gatewayAddress = (env = process.env) => env.MAGPIE_ADDR || '127.0.0.1:3425';
+// Where the gateway must answer: where this plugin's model services point (package.json, one host and port for them all),
+// Magpie's own default 127.0.0.1:3425.
+export const GATEWAY = new URL(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).contributes.modelProviders[0].url).host;
 
 // Whether the gateway at `address` answers its model list.
 export async function answers(address, fetcher = fetch) {
@@ -36,7 +37,10 @@ export function versionOf(binary) {
 const fail = message => { console.error(message); process.exit(1); };
 
 async function main() {
-  const address = gatewayAddress();
+  const address = GATEWAY;
+  // magpie, and the service it installs, take MAGPIE_ADDR: one elsewhere would serve where the model services do not point.
+  if (process.env.MAGPIE_ADDR && process.env.MAGPIE_ADDR !== address)
+    fail(`MAGPIE_ADDR=${process.env.MAGPIE_ADDR} 让 Magpie 网关不在 ${address}，而插件的模型服务指向那里：去掉它再安装`);
   if (await answers(address)) { console.log(`Magpie 网关 http://${address}`); return; }
   let binary = magpieBinary();
   if (!binary || !versionOf(binary)) {

@@ -28,6 +28,8 @@ Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 
 3. 运行 `magpie daemon install`，把网关装成你自己的常驻服务（Mac 是 launchd 的 `com.yetone.magpie.serve`，Linux 是 `systemctl --user` 的 `magpie`），
    登录时启动、出错后重启；然后等网关应答。
 
+设置动作只认模型服务指向的 `127.0.0.1:3425`：后端的环境里设了指向别处的 `MAGPIE_ADDR`（magpie 和它装的服务都照它监听）时，设置动作直接报错，不安装。
+
 每台机器各跑自己的 Magpie，读的是这台机器上 Claude Code、Codex 等的登录（Magpie 的「订阅账号」，可在它的 Settings › Privacy 关掉）。
 provider 和账号在 Magpie 里加：Mac 打开 magpie.app，或在终端里 `magpie provider add …`、`magpie tui`。
 
