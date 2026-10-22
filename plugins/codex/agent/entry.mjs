@@ -1,9 +1,9 @@
 // The Codex agent as Coda starts it (the plugin's `contributes.agents`): the locked codex-acp, run in this process with Coda's
 // patches, which fail the start once the adapter changes. Between it and Coda the entry speaks Coda's protocol for it
 // (waits.mjs, docs/agent-protocol.md): its session instructions become the thread's developer instructions (instructions.mjs),
-// and a steer that finds no turn going is answered `promptRequired` (steering.mjs). What Coda wants of Codex beyond ACP is set
-// here: the mode a session starts in, and which Codex program runs, through the account bridge when another plugin chooses
-// the account (accounts.mjs).
+// and a steer that finds no turn going is answered `promptRequired` (steering.mjs); the models of the model service chosen in
+// Coda join Codex's own (providers.mjs). What Coda wants of Codex beyond ACP is set here: the mode a session starts in, and
+// which Codex program runs, through the account bridge when another plugin chooses the account (accounts.mjs).
 import { createRequire, registerHooks } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -19,6 +19,7 @@ import { networkedCodexDevelopment } from './network.mjs';
 import { codexOptionsAsShown } from './options.mjs';
 import { instructedCodexThreads } from './instructions.mjs';
 import { promptRequiredCodexSteering } from './steering.mjs';
+import { servedCodexModels } from './providers.mjs';
 import { input, listen, relayedCodexStreams } from './relay.mjs';
 import { CodexWaits } from './waits.mjs';
 import { explainCodexError, reportedCodexFailures } from './errors.mjs';
@@ -62,6 +63,6 @@ registerHooks({ load(url, context, nextLoad) {
   const loaded = nextLoad(url, context);
   if (url !== adapter.href) return loaded;
   return { ...loaded, source: reportedCodexFailures(codexOptionsAsShown(relayedCodexStreams(orderedCodexTitles(followCodexProcessExit(continuedCodexSubagents(
-    promptRequiredCodexSteering(instructedCodexThreads(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8')))))))))) };
+    promptRequiredCodexSteering(instructedCodexThreads(servedCodexModels(networkedCodexDevelopment(Buffer.from(loaded.source).toString('utf8'))))))))))) };
 } });
 await import(adapter.href);

@@ -9,7 +9,7 @@ import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { inflateSync } from 'node:zlib';
 import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_SCOPE, CAPABILITY,
   CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, BUILTIN_ONLY, CONTRIBUTES, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
-  SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT } from './coda.mjs';
+  MODEL_PROVIDER, SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT, STRING_FORMATS } from './coda.mjs';
 
 class Invalid extends Error {}
 const check = (condition, message) => { if (!condition) throw new Invalid(message); };
@@ -52,9 +52,9 @@ function schema(value, where, entry = false) {
   const agent = value.format === 'coda-agent';
   check(['boolean', 'integer', 'number', 'string', 'object', 'array'].includes(value.type), `${where} 的 type 不受支持：${value.type}`);
   check((value.items === undefined && value.uniqueItems === undefined) || value.type === 'array', `${where}：只有多选（type: array）才写 items 与 uniqueItems`);
-  check(value.format === undefined || agent || value.format === 'coda-agent-match' || value.format === 'duration', `${where} 的 format 不受支持：${value.format}`);
+  check(value.format === undefined || agent || value.format === 'coda-agent-match' || STRING_FORMATS.includes(value.format), `${where} 的 format 不受支持：${value.format}`);
   check(!agent || value.type === 'object', `${where}：coda-agent 是对象`);
-  check(value.format !== 'duration' || value.type === 'string', `${where}：duration 是文本`);
+  check(!STRING_FORMATS.includes(value.format) || value.type === 'string', `${where}：${value.format} 是文本`);
   check(value.enum === undefined || (Array.isArray(value.enum) && value.enum.length && ['string', 'integer', 'number'].includes(value.type)), `${where} 的 enum 无效`);
   const out = { type: value.type, format: value.format, enum: value.enum, minimum: value.minimum, maximum: value.maximum };
   if (value.type === 'array') {
@@ -106,6 +106,9 @@ function checkValue(spec, value, where) {
   } else if (spec.type === 'string') {
     check(typeof value === 'string' && value.length <= 20000 && !value.includes('\0'), `${where}须为文本`);
     check(spec.format !== 'duration' || isDuration(value), `${where}须为 ISO 8601 时长，如 P30D、PT6H`);
+    // A repository's address Coda reads as it installs from one; here only the directory and the model service.
+    check(spec.format !== 'coda-directory' || value === '' || value.startsWith('/'), `${where}须为绝对目录`);
+    check(spec.format !== 'coda-model-provider' || value === '' || MODEL_PROVIDER.test(value), `${where}须为「插件/服务」，如 cliproxy/cliproxy`);
   } else if (spec.type === 'object') {
     object(value, where);
     for (const [k, v] of Object.entries(value)) {

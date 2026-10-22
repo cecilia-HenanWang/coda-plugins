@@ -16,9 +16,17 @@ export function sessionInstructions(systemPrompt) {
   return content.map(block => block.text).join('\n\n');
 }
 
+// Coda's instructions for the session this process runs (Coda runs one a process), as it last opened it; codex-acp's own resume
+// of its thread as the session moves to another model provider (providers.mjs, `carriedInstructions`) carries them on.
+let opened, carrying = false;
+export async function carriedInstructions(work) {
+  carrying = true;
+  try { return await work(); } finally { carrying = false; }
+}
 // The thread's developer instructions for a session request: its own configuration's, then Coda's.
 export async function codaDeveloperInstructions(codexClient, request) {
-  const ours = request._meta?.[INSTRUCTIONS];
+  if (!carrying) opened = request._meta?.[INSTRUCTIONS];
+  const ours = opened;
   if (!ours) return void 0;
   const own = (await codexClient.configRead({ cwd: request.cwd, includeLayers: false }))?.config?.developer_instructions;
   return own ? `${own}\n\n${ours}` : ours;

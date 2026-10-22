@@ -669,3 +669,85 @@ test('the session publishes its title as session info, and a stopped turn starts
   const info = await until(() => c.updates().find(u => u.sessionUpdate === 'session_info_update'));
   assert.deepEqual(info, { sessionUpdate: 'session_info_update', title: '隐藏空白思考' });
 });
+
+// A model service of another plugin, as Coda hands it to Claude's processes (docs/plugins.md「模型服务」): listing two models.
+async function modelService(t) {
+  const { createServer } = await import('node:http');
+  const asked = [];
+  const server = createServer((request, response) => {
+    asked.push(request.url);
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ data: [{ id: 'fake/alpha' }, { id: 'fake/beta' }] }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  return { asked, url, env: { CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }),
+    CODA_MODEL_PROVIDERS: JSON.stringify({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url } }) } };
+}
+
+test('the chosen model service\'s models are listed beside Claude\'s own; a turn on one runs in a query of its own with the service as its API', async t => {
+  const service = await modelService(t);
+  const c = await setup(t, { env: service.env });
+  const opened = await c.open(), first = queries.get(c.sessionId);
+  assert.deepEqual(opened.configOptions.find(o => o.id === 'model').options.slice(-3), [{ value: 'claude-custom-1', name: 'Custom (claude-custom-1)' },
+    { value: 'magpie/anthropic/fake/alpha', name: 'fake/alpha (Magpie · Anthropic)' }, { value: 'magpie/anthropic/fake/beta', name: 'fake/beta (Magpie · Anthropic)' }]);
+  assert.deepEqual(service.asked, ['/models?limit=1000']);
+  const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value });
+  await set('effort', 'high');
+  // Chosen, it is the session's model at once; the query it runs in starts with the next turn, so that reading every
+  // model's options (as Coda's catalog does) starts nothing.
+  const chosen = (await set('model', 'magpie/anthropic/fake/alpha')).result.configOptions;
+  assert.equal(chosen.find(o => o.id === 'model').currentValue, 'magpie/anthropic/fake/alpha');
+  assert.equal(chosen.find(o => o.id === 'effort'), undefined, 'a service\'s model has no effort to choose');
+  assert.deepEqual([queries.get(c.sessionId), first.effort], [first, null]);
+  // What the session said so far goes on, the service as Claude Code's API, above the machine's settings.
+  await c.prompt('hello');
+  const second = queries.get(c.sessionId);
+  assert.notEqual(second, first); assert.equal(first.closed, true);
+  assert.deepEqual([second.options.resume, second.options.model, second.options.permissionMode], [c.sessionId, 'fake/alpha', 'default']);
+  assert.deepEqual(second.options.settings, { crossSessionInbound: 'refuse', env: { ANTHROPIC_BASE_URL: service.url, ANTHROPIC_AUTH_TOKEN: 'none',
+    ANTHROPIC_MODEL: 'fake/alpha', ANTHROPIC_DEFAULT_OPUS_MODEL: 'fake/alpha', ANTHROPIC_DEFAULT_SONNET_MODEL: 'fake/alpha',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'fake/alpha', CLAUDE_CODE_SUBAGENT_MODEL: 'fake/alpha' } });
+  assert.equal(c.said().at(-1), 'hello');
+  // Its init names the model as the service does: the session's model stays the service's.
+  const model = () => c.updates().findLast(u => u.sessionUpdate === 'config_option_update').configOptions.find(o => o.id === 'model').currentValue;
+  assert.equal(model(), 'magpie/anthropic/fake/alpha');
+  // Another of the service's models runs in another query; Claude's own again in one without the service, as chosen.
+  await set('model', 'magpie/anthropic/fake/beta'); await c.prompt('again');
+  const third = queries.get(c.sessionId);
+  assert.deepEqual([third.options.model, third.options.settings.env.ANTHROPIC_MODEL], ['fake/beta', 'fake/beta']);
+  await set('mode', 'plan'); await set('model', 'other-model'); await set('effort', 'high'); await c.prompt('history');
+  const fourth = queries.get(c.sessionId);
+  assert.deepEqual([fourth.options.model, fourth.options.permissionMode, fourth.options.settings], ['other-model', 'plan', { crossSessionInbound: 'refuse', effortLevel: 'high' }]);
+  assert.equal(c.said().at(-1), 'hello|again|history', 'one conversation throughout');
+  assert.equal(model(), 'other-model');
+  // Between Claude's own models the query itself switches, as before.
+  await set('model', 'fixture-model-v1');
+  assert.deepEqual([queries.get(c.sessionId), fourth.model], [fourth, 'fixture-model-v1']);
+});
+
+test('a session with nothing said yet starts afresh on the service\'s model, and no model of another service is chosen while what Claude runs goes on', async t => {
+  const service = await modelService(t);
+  const c = await setup(t, { env: service.env });
+  await c.open();
+  const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value });
+  // Claude Code keeps no transcript of a session until it is said something.
+  await rm(join(c.cwd, `.sdk-${c.sessionId}.json`));
+  await set('model', 'magpie/anthropic/fake/alpha'); await c.prompt('hello');
+  assert.deepEqual([queries.get(c.sessionId).options.sessionId, queries.get(c.sessionId).options.resume], [c.sessionId, undefined]);
+  await c.prompt('background');
+  const running = queries.get(c.sessionId);
+  const refused = await set('model', 'fixture-model-v1');
+  assert.equal(refused.error.code, -32602); assert.match(refused.error.message, /后台任务/);
+  assert.equal((await set('model', 'magpie/anthropic/fake/alpha')).error, undefined, 'the model it runs is no switch');
+  await c.prompt('next'); assert.equal(queries.get(c.sessionId), running);
+});
+
+test('without a model service chosen, or with one that cannot list its models, the session has Claude\'s own alone', async t => {
+  const c = await setup(t, { env: { CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }),
+    CODA_MODEL_PROVIDERS: JSON.stringify({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:1' } }) } });
+  const models = (await c.open()).configOptions.find(o => o.id === 'model').options.map(o => o.value);
+  assert.deepEqual(models, ['fixture-model-v1', 'other-model', 'fixture-model-v1[1m]', 'claude-custom-1']);
+  assert.deepEqual(queries.get(c.sessionId).options.settings, { crossSessionInbound: 'refuse' });
+});

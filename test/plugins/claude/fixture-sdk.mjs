@@ -17,7 +17,8 @@ export function fixtureSdk(argv = []) {
     alive = new Map();
     queue = []; wake = null; closed = false; controller = new AbortController();
     constructor({ prompt, options }) {
-      this.options = options; this.id = options.resume ?? options.sessionId; this.model = models[0].value; this.mode = 'default';
+      this.options = options; this.id = options.resume ?? options.sessionId; this.model = options.model ?? models[0].value; this.mode = options.permissionMode ?? 'default';
+      this.effort = options.settings?.effortLevel;
       this.entries = options.resume ? JSON.parse(readFileSync(path(options.cwd, this.id))) : [];
       this.persist(); queries.set(this.id, this);
       void (async () => { for await (const m of prompt) { if (this.closed) break; await this.respond(m); } })();
