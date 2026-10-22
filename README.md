@@ -102,7 +102,8 @@ Claude 与 Codex 各有一项设置「模型服务」（`claude.modelProvider`�
 - **Codex**：Codex 一个线程只绑一个模型 provider，所以照 codex-acp 处理 ACP `providers/set`、`providers/disable` 的办法：重启 app-server，
   把服务作为它 OpenAI 槽位的 gateway（`model_providers.custom-gateway`，`wire_api = "responses"`，Key 放在 `Authorization` 头），再 resume 会话的线程；
   换回 Codex 自己的模型时撤掉 gateway 再 resume。resume 带着会话打开时的 Coda 会话指令与 MCP 服务器，app-server 里的后台命令按 codex-acp 原有的做法报为停止。
-  resume 失败时这一轮失败，下一轮重新换（会话在哪个 provider 上由入口自己记，codex-acp 在 resume 之前就记下了 gateway，不能拿它当换成了）。
+  换的过程中失败（重启的 app-server 起不来、resume 失败）时这一轮失败，下一轮从重启起重新换（会话在哪个 provider 上由入口自己记：
+  codex-acp 在 resume 之前就记下了 gateway，新 app-server 起不来时还留着已关闭的旧客户端，都不能拿来当换成了）。
   一句话都还没说的线程 Codex 没有写下来，resume 不了：先以第一条消息（前 80 字）为名 `thread/name/set` 把它写下，这也就成了会话标题（不再由 Codex 生成）。
   Codex 没有服务的模型的元数据，它为此发的「Model metadata … not found」与恢复时的「recorded with model …」提示不进会话。
 

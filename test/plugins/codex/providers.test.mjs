@@ -148,3 +148,19 @@ test('through the real entry: a move whose resume fails fails its turn, and the 
   await set('fake'); await prompt('native');
   assert.deepEqual([threads().at(-1).params.modelProvider, turns().at(-1).model], ['openai', 'fake']);
 });
+
+test('through the real entry: a move whose restarted Codex does not start fails its turn, and the next moves the session on a Codex that does', async t => {
+  // The second initialize: that of the app-server started again for the move.
+  const { set, prompt, threads, turns } = await entryOnService(t, { FAKE_CODEX_FAIL_ONCE: 'initialize#2' });
+  await set('magpie/responses/fake/alpha');
+  const failed = await prompt('hello');
+  assert.match(failed.error?.message ?? '', /initialize failed/);
+  assert.equal(turns().length, 0, 'no turn on a Codex that did not start');
+  // Back on Codex's own, as well as on to the service again.
+  await set('fake');
+  assert.equal((await prompt('native')).result?.stopReason, 'end_turn');
+  assert.deepEqual([threads().at(-1).method, threads().at(-1).params.modelProvider, turns().at(-1).model], ['thread/resume', 'openai', 'fake']);
+  await set('magpie/responses/fake/alpha');
+  assert.equal((await prompt('service')).result?.stopReason, 'end_turn');
+  assert.deepEqual([threads().at(-1).params.modelProvider, turns().at(-1).model], ['custom-gateway', 'fake/alpha']);
+});

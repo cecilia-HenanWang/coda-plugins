@@ -41,7 +41,8 @@ export async function serviceModels({ ref, title, url, key }, fetcher = fetch) {
 // One service a process (Coda runs one session a process), listed once, as its session opens.
 export class ServiceModels {
   // `on`: the service's address the session runs on, null on Codex's own (where it opens), undefined when a move to one or
-  // the other failed partway: codex-acp sets its gateway before the thread is resumed on it, so that is no sign of either.
+  // the other failed partway: codex-acp sets its gateway before the thread is resumed on it, so that is no sign of either,
+  // and keeps its old client, closed, when the app-server it started again does not start.
   constructor(service = chosenService(), fetcher = fetch) { Object.assign(this, { service, fetcher }); this.models = []; this.on = null; }
   list() {
     return this.listed ??= (!this.service ? Promise.resolve([]) : serviceModels(this.service, this.fetcher)
@@ -52,15 +53,18 @@ export class ServiceModels {
   wire(model) { return this.served(model)?.model ?? model; }
   // Before a turn of codex-acp's `server`: the session on the provider of its model, its thread resumed with Coda's
   // instructions as it was opened. A thread nothing was said in yet is not written down, and would not be resumed after the
-  // restart: naming it, by what it is first told, writes it.
+  // restart: naming it, by what it is first told, writes it. A move that failed is made again from the restart, on which
+  // codex-acp has a client again; the thread was written down before it.
   async route(server, { sessionId, prompt }) {
     const state = server.sessions.get(sessionId);
     if (!state) return;
     const served = this.served(state.currentModelId.replace(/\[[^\]]*\]$/, '')), wanted = served ? this.service.url : null;
     if (this.on === wanted) return;
-    const client = server.codexAcpClient.appServerClient;
-    const { thread } = await client.threadRead({ threadId: sessionId });
-    if (thread.path && !existsSync(thread.path)) await client.threadSetName({ threadId: sessionId, name: firstWords(prompt) });
+    if (this.on !== undefined) {
+      const client = server.codexAcpClient.appServerClient;
+      const { thread } = await client.threadRead({ threadId: sessionId });
+      if (thread.path && !existsSync(thread.path)) await client.threadSetName({ threadId: sessionId, name: firstWords(prompt) });
+    }
     this.on = undefined;
     await carriedInstructions(() => served ? server.setProvider({ providerId: 'openai', apiType: 'openai', baseUrl: this.service.url,
       headers: this.service.key ? { Authorization: `Bearer ${this.service.key}` } : {} }) : server.disableProvider({ providerId: 'openai' }));
