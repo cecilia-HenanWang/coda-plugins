@@ -77,7 +77,12 @@ export class ClaudeSession {
       .onRequest('session/set_config_option', ({ params }) => this.configure(params.configId, params.value))
       .onRequest('session/set_mode', async ({ params }) => { await this.configure('mode', params.modeId); return {}; })
       .onRequest('session/prompt', ({ params }) => this.prompt(params))
-      .onNotification('session/cancel', ({ params }) => { if (params.sessionId === this.sessionId) void this.query?.interrupt().catch(() => {}); })
+      .onNotification('session/cancel', ({ params }) => {
+        if (params.sessionId !== this.sessionId) return;
+        // While the session moves to another query there is none to interrupt: the turn waiting on the move is stopped there.
+        if (this.rerouting) this.cancelling = true;
+        void this.query?.interrupt().catch(() => {});
+      })
       .onRequest('_coda/wait/stop', params => params, ({ params }) => this.stopWait(params))
       .connect(stream);
     this.client = this.connection.client;
@@ -229,7 +234,12 @@ export class ClaudeSession {
   // Answered when the native result that names this input arrives; accepting it into the input says nothing yet.
   async prompt({ prompt }) {
     if (this.phase !== 'running') throw failure('Claude 会话未在运行', -32001);
-    if (this.rerouted()) await (this.rerouting ??= this.reroute().finally(() => { this.rerouting = null; }));
+    if (this.rerouted()) {
+      if (!this.rerouting) { this.cancelling = false; this.rerouting = this.reroute().finally(() => { this.rerouting = null; }); }
+      await this.rerouting;
+      // Stopped while it moved: the input is not given to the new query.
+      if (this.cancelling) { this.cancelling = false; return { stopReason: 'cancelled' }; }
+    }
     const id = randomUUID(), content = prompt.filter(block => block.type === 'text').map(block => block.text).join('\n');
     const answered = new Promise((resolve, reject) => this.prompts.set(id, { resolve, reject }));
     this.input.push({ type: 'user', uuid: id, session_id: this.sessionId, parent_tool_use_id: null, message: { role: 'user', content } });
