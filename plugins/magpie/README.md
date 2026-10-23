@@ -26,7 +26,8 @@ Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 
 2. 没有能运行的 `magpie`，用官方安装程序装上（`curl -fsSL https://usemagpie.ai/install.sh | sh`）：Mac 上把 magpie.app 放进 `/Applications`
    （不可写时 `~/Applications`），命令链接到 `~/.local/bin/magpie`；Linux 上只装命令。已有的不动，Magpie 自己会更新。
 3. 运行 `magpie daemon install`，把网关装成你自己的常驻服务（Mac 是 launchd 的 `com.yetone.magpie.serve`，Linux 是 `systemctl --user` 的 `magpie`），
-   登录时启动、出错后重启；然后等网关应答。
+   登录时启动、出错后重启；然后等网关应答。服务记住的 PATH 是 Coda 给 Coda 以外的程序的那份（`CODA_USER_PATH`，不含 Coda 自己的目录）：
+   Magpie 会读 PATH 上每个目录找各家 CLI，由 launchd 启动的它去读 Coda 的目录时可能被 macOS 一直挂着，之后的请求就都卡住。
 
 设置动作只认模型服务指向的 `127.0.0.1:3425`：后端的环境里设了指向别处的 `MAGPIE_ADDR`（magpie 和它装的服务都照它监听）时，设置动作直接报错，不安装。
 

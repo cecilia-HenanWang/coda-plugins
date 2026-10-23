@@ -19,7 +19,7 @@ export function declaredPanel(id, panelId) {
 // test puts in place of the machine's).
 export const pluginEnv = (id, extra = {}) => {
   const inherited = { ...process.env };
-  for (const key of ['CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_EXTENSIONS', 'CODA_PLUGIN_DEPENDENCIES']) delete inherited[key];
+  for (const key of ['CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_EXTENSIONS', 'CODA_PLUGIN_DEPENDENCIES', 'CODA_USER_PATH']) delete inherited[key];
   const env = { ...inherited, CODA_PLUGIN_SETTINGS: '{}', ...extra, CODA_PLUGIN_PATH: pluginDir(id) };
   env.PATH = [dirname(process.execPath), env.PATH].filter(Boolean).join(':');
   return env;
