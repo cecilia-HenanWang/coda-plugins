@@ -151,3 +151,35 @@ test('invalid JSONC is rejected clearly without echoing user configuration', asy
     });
   }
 });
+
+test('an environment template can supply the provider object without recursively expanding its values', async () => {
+  const source = '{"autoupdate":{env:FLAG},"provider":{env:REVIEW_PROVIDER}}';
+  const original = { ...provided(), FLAG: 'false', REVIEW_PROVIDER: String.raw`{
+    "native": { "options": { "apiKey": "user-key", "headers": {
+      "x-literal": "{env:SECRET}", "x-file": "{file:/user/file}",
+    }, }, },
+  }`, SECRET: 'must-stay-private', OPENCODE_CONFIG_CONTENT: source,
+    OPENCODE_CONFIG: '/user/custom.jsonc', OPENCODE_CONFIG_DIR: '/user/config-dir' };
+  const env = await providerEnvironment(original, async () => Response.json({ data: [{ id: 'vendor/{env:SECRET}' }] }));
+  const expanded = env.OPENCODE_CONFIG_CONTENT.replace(/\{env:([^}]+)\}/g, (_, name) => env[name] || '')
+    .replaceAll('{file:/user/file}', 'user-file');
+  const config = JSON.parse(expanded);
+  assert.equal(config.autoupdate, false);
+  assert.deepEqual(config.provider.native.options, { apiKey: 'user-key', headers: { 'x-literal': '{env:SECRET}', 'x-file': 'user-file' } });
+  assert.ok(config.provider['coda-magpie.openai'].models['vendor/{env:SECRET}']);
+  assert.equal(env.OPENCODE_CONFIG, original.OPENCODE_CONFIG);
+  assert.equal(env.OPENCODE_CONFIG_DIR, original.OPENCODE_CONFIG_DIR);
+  assert.equal(env.REVIEW_PROVIDER, original.REVIEW_PROVIDER);
+  assert.equal(original.OPENCODE_CONFIG_CONTENT, source);
+});
+
+test('provider templates still reject invalid objects and cannot recursively introduce unquoted env values', async () => {
+  for (const value of [undefined, '', 'null', '[]', 'false', '{"native":', '{"native":{env:SECOND}}'])
+    await assert.rejects(providerEnvironment({ ...provided(), REVIEW_PROVIDER: value, SECOND: '{}',
+      OPENCODE_CONFIG_CONTENT: '{"provider":{env:REVIEW_PROVIDER}}' },
+    async () => Response.json({ data: [{ id: 'm' }] })), error => {
+      assert.ok(error instanceof SyntaxError);
+      assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
+      return true;
+    });
+});

@@ -56,10 +56,10 @@ function answer(response, path, body) {
 }
 
 const cases = ['openai-completions', 'openai-responses', 'anthropic-messages'].flatMap(api => [true, false].map(keyed => ({ api, keyed })));
-cases.push(...['env', 'file', 'jsonc', 'unquoted'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
+cases.push(...['env', 'file', 'jsonc', 'unquoted', 'provider-template'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
 for (const { api, keyed, regression } of cases)
   test(`real OpenCode: ${regression ?? api} (${keyed ? 'service key' : 'keyless'}) models, turn, native model switch and process resume`,
-    { skip: !binary || (regression === 'unquoted' && legacyInline), timeout: 120_000 }, async t => {
+    { skip: !binary || (['unquoted', 'provider-template'].includes(regression) && legacyInline), timeout: 120_000 }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'coda-opencode-native-')), agents = [], requests = [];
     t.after(async () => { for (const agent of agents) { await agent.terminate(1000); agent.kill(); } rmSync(root, { recursive: true, force: true }); });
     mkdirSync(join(root, '.opencode/bin'), { recursive: true });
@@ -68,7 +68,8 @@ for (const { api, keyed, regression } of cases)
     const privateFile = join(root, 'private.txt');
     writeFileSync(privateFile, 'synthetic-file-secret');
     const model = regression === 'env' ? 'vendor/{env:OPENAI_API_KEY}'
-      : regression === 'file' ? `vendor/{file:${privateFile}}` : 'vendor/test-model';
+      : regression === 'file' ? `vendor/{file:${privateFile}}`
+      : regression === 'provider-template' ? 'vendor/{env:OPENAI_API_KEY}/{file:private.txt}' : 'vendor/test-model';
     const server = createServer(async (request, response) => {
       let raw = '';
       for await (const chunk of request) raw += chunk;
@@ -87,6 +88,13 @@ for (const { api, keyed, regression } of cases)
       provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `${url}/native/v1`, apiKey: 'fixture-native-key' },
         models: { native: { name: 'Native fixture', limit: { context: 32768, output: 4096 } } } } } };
     writeFileSync(join(root, 'opencode.json'), JSON.stringify(nativeConfig));
+    if (regression === 'provider-template') {
+      mkdirSync(join(root, 'custom-dir'));
+      for (const [file, name] of [['custom.jsonc', 'from-file'], ['custom-dir/opencode.json', 'from-dir']])
+        writeFileSync(join(root, file), JSON.stringify({ $schema: nativeConfig.$schema, provider: {
+          fixture: { models: { [name]: { name, limit: { context: 32768, output: 4096 } } } },
+        } }));
+    }
     const open = () => {
       const updates = [];
       const agent = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: root,
@@ -103,6 +111,14 @@ for (const { api, keyed, regression } of cases)
               "autoupdate": {env:OPENCODE_TEST_AUTOUPDATE}, "provider": { "fixture": { "models": { "native": { "limit": {
                 "context": {env:OPENCODE_TEST_CONTEXT}, "output": {env:OPENCODE_TEST_OUTPUT},
               }, }, }, }, }, }` } : {}),
+          ...(regression === 'provider-template' ? {
+            REVIEW_PROVIDER: JSON.stringify({ fixture: { ...nativeConfig.provider.fixture, options: {
+              ...nativeConfig.provider.fixture.options, apiKey: 'provider-template-key',
+              headers: { 'x-literal': '{env:OPENAI_API_KEY}', 'x-user-file': '{file:private.txt}' },
+            } } }),
+            OPENCODE_CONFIG_CONTENT: '{"provider":{env:REVIEW_PROVIDER}}',
+            OPENCODE_CONFIG: join(root, 'custom.jsonc'), OPENCODE_CONFIG_DIR: join(root, 'custom-dir'),
+          } : {}),
           CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'),
           CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProvider': 'fixture/service' }),
           CODA_MODEL_PROVIDERS: JSON.stringify({ 'fixture/service': { api, title: 'Service fixture', url: api === 'anthropic-messages' ? url : `${url}/v1`, ...(keyed ? { keyFile: join(root, 'key') } : {}) } }) },
@@ -123,6 +139,10 @@ for (const { api, keyed, regression } of cases)
     const models = modelOption ? flatten(modelOption.options) : session.models?.availableModels.map(model => model.modelId);
     assert.ok(models?.includes(id), JSON.stringify(session));
     assert.ok(models.includes('fixture/native'));
+    if (regression === 'provider-template') {
+      assert.ok(models.includes('fixture/from-file'));
+      assert.ok(models.includes('fixture/from-dir'));
+    }
     const prompt = async (client, modelId) => {
       await client.request(modelOption ? 'session/set_config_option' : 'session/set_model', modelOption
         ? { sessionId: session.sessionId, configId: modelOption.id, value: modelId } : { sessionId: session.sessionId, modelId });
@@ -160,6 +180,12 @@ for (const { api, keyed, regression } of cases)
     if (regression === 'unquoted') {
       const native = requests.find(r => r.path === '/native/v1/chat/completions' && r.body.stream);
       assert.equal(native.body.max_tokens, 1024);
+    }
+    if (regression === 'provider-template') {
+      const native = requests.find(r => r.path === '/native/v1/chat/completions');
+      assert.equal(native.headers.authorization, 'Bearer provider-template-key');
+      assert.equal(native.headers['x-literal'], '{env:OPENAI_API_KEY}');
+      assert.equal(native.headers['x-user-file'], 'synthetic-file-secret');
     }
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'opencode.json'), 'utf8')), nativeConfig);
   });

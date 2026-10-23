@@ -1,6 +1,7 @@
 // Coda's chosen model service becomes a separate native OpenCode provider, through the child process's inline config.
 // OpenCode lists, selects and resumes its models itself; the machine's own providers and config files stay as they are.
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { parseTree } from 'jsonc-parser';
 
 export const SETTING = 'opencode.modelProvider';
@@ -67,13 +68,16 @@ export function serviceProvider(service, models) {
 // way: escaping '{' within JSON string tokens preserves their literal value without exposing an interpolation template.
 const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\])*"/g, token => token.replaceAll('{', '\\u007b'));
 
-function inlineProvider(text, id, provider) {
+function inlineTree(text, envExpanded = false) {
   // Unquoted user templates may become booleans or numbers only when OpenCode expands them. Give those complete nodes
   // quoted placeholders of the same length for parsing, keeping offsets into the original text. Strings and comments are
-  // consumed first so their templates retain the existing semantics. No environment or file is read by this merge.
+  // consumed first so their templates retain the existing semantics. This parser does not read environment or files.
   const templates = new Map();
   const syntax = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\{(?:env|file):[^}]+\}/g, (token, offset) => {
     if (!token.startsWith('{')) return token;
+    // OpenCode substitutes environment variables once, then files. An env value cannot introduce another unquoted env
+    // template; leaving it unmasked lets the parser reject it just as OpenCode would.
+    if (envExpanded && token.startsWith('{env:')) return token;
     templates.set(offset, token);
     return `"${' '.repeat(token.length - 2)}"`;
   });
@@ -86,14 +90,38 @@ function inlineProvider(text, id, provider) {
     : node.type === 'object' ? `{${node.children.map(render).join(',')}}`
     : node.type === 'array' ? `[${node.children.map(render).join(',')}]`
     : node.type === 'property' ? node.children.map(render).join(':') : text.slice(node.offset, node.offset + node.length);
+  return { root, render, templates };
+}
+
+function inlineProvider(text, id, provider, env) {
+  const { root, render, templates } = inlineTree(text);
   const named = (node, key) => node.children[0].value === key;
   // Like JSON parsing, the last duplicate property wins. Replace only the selected provider, leaving other providers'
   // source strings (including their intentional templates) unchanged.
-  const existing = root.children.findLast(node => named(node, 'provider'))?.children[1];
+  let existing = root.children.findLast(node => named(node, 'provider'))?.children[1], renderProvider = render;
+  const variable = existing && /^\{env:([^}]+)\}$/.exec(templates.get(existing.offset) ?? '');
+  if (variable) {
+    // Only the provider object's structure is needed for the merge. Keep other templates and the user's config file/dir
+    // entry points unchanged, and do not modify the original variable (it may be referenced elsewhere in the config).
+    const expanded = inlineTree(env[variable[1]] || '', true);
+    existing = expanded.root;
+    renderProvider = expanded.render;
+  }
   if (existing && existing.type !== 'object') throw new SyntaxError('OPENCODE_CONFIG_CONTENT 的 provider 必须是对象');
-  const providers = (existing?.children ?? []).filter(node => !named(node, id)).map(render);
+  const providers = (existing?.children ?? []).filter(node => !named(node, id)).map(renderProvider);
   providers.push(`${literalJSON(id)}:${literalJSON(provider)}`);
-  return `{${[...root.children.filter(node => !named(node, 'provider')).map(render), `"provider":{${providers.join(',')}}`].join(',')}}`;
+  let value = `{${providers.join(',')}}`;
+  const additions = {};
+  if (variable) {
+    // Keep this object behind a child-only env template. OpenCode's one env pass must NOT expand templates introduced by
+    // the original variable; its subsequent file pass still resolves their paths in the native session directory.
+    // A fresh name also leaves every other reference to the original variable unchanged.
+    const name = `CODA_OPENCODE_PROVIDER_${randomUUID().replaceAll('-', '_')}`;
+    additions[name] = value;
+    value = `{env:${name}}`;
+  }
+  return { ...additions, OPENCODE_CONFIG_CONTENT:
+    `{${[...root.children.filter(node => !named(node, 'provider')).map(render), `"provider":${value}`].join(',')}}` };
 }
 
 export async function providerEnvironment(env = process.env, fetcher = fetch) {
@@ -104,6 +132,6 @@ export async function providerEnvironment(env = process.env, fetcher = fetch) {
   catch (error) { log(`模型服务 ${service.ref} 列不出模型：${error.message}`); return env; }
   if (!models.length) return env;
   // Invalid user configuration still fails clearly, without echoing config contents (which may include credentials).
-  return { ...env, OPENCODE_CONFIG_CONTENT: inlineProvider(env.OPENCODE_CONFIG_CONTENT || '{}',
-    providerId(service.ref), serviceProvider(service, models)) };
+  return { ...env, ...inlineProvider(env.OPENCODE_CONFIG_CONTENT || '{}',
+    providerId(service.ref), serviceProvider(service, models), env) };
 }

@@ -117,10 +117,12 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
   防止模型 ID、标题等服务数据触发 OpenCode 的 `{env:…}` / `{file:…}` 展开。真正无效的配置仍明确报错。机器与项目的 Provider 启停限制也仍然有效。
   用户未加引号的布尔值、数字等变量节点在解析时暂用等长占位节点，合并后原样还原，由 OpenCode 自己展开；合并器不读取它们引用的环境变量或文件。
+  `"provider":{env:VAR}` 也可由环境变量提供整个 Provider 对象：合并器只读取该对象的结构，结果放进子进程独有的变量，
+  仍交给 OpenCode 做一次环境变量展开，再处理文件模板。原变量及其他配置入口保持不变；对象里的相对文件引用仍以原生会话目录为基准。
   `/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
   服务给出 `context_length` / `max_output_tokens` 时用它们；不根据模型名猜测图片与推理能力。
   真 CLI 的本地验证（不使用实际模型服务与登录）：`OPENCODE_TEST_BINARY=/absolute/path/to/opencode node --test test/plugins/opencode/native.test.mjs`，
-  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，以及服务模型的变量模板与用户 JSONC 配置。
+  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，以及服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置。
 
 ### Grok 审批模式
 
