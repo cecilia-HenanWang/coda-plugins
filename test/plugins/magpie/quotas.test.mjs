@@ -14,7 +14,7 @@ const declared = declaredPanel('magpie', 'quotas');
 // The gateway's answer to /v1/magpie/quotas, as Magpie gives it (internal/provider/quotas.go).
 const quotas = [
   { provider: 'codex', name: 'Codex', kind: 'subscription', plan: 'pro', user: 'a@example.com',
-    windows: [{ name: '7 days', used: 37.4, remaining: 62.6, resetsAt: '2026-10-30T01:13:02+08:00' }],
+    windows: [{ name: '5 hours', used: 0, remaining: 100 }, { name: '7 days', used: 37.4, remaining: 62.6, resetsAt: '2026-10-30T01:13:02+08:00' }],
     balance: '62033.82 credits', resets: { count: 2, until: '2026-10-29T18:44:32Z' } },
   { provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', plan: 'Free', user: 'leavan', alias: '我的',
     windows: [{ name: 'Credits', used: 25, remaining: 75, display: '500 / 2000', limit: 2000, unit: 'credits' }] },
@@ -44,18 +44,19 @@ async function panel(t, answer) {
   return run(declared.command, { ...pluginEnv('magpie', { CODA_NODE: process.execPath }), CODA_PLUGIN_PATH: copy });
 }
 
-test('each subscription Magpie serves is a card: what is left of each window, its balance and resets, and why a reading failed', async t => {
+test('each subscription Magpie serves is a card: what is left of each window as the other panels say it, its balance and resets, and why a reading failed', async t => {
   const ran = await panel(t, { body: { object: 'list', data: quotas } });
   assert.equal(ran.code, 0, ran.stderr);
   assert.deepEqual(JSON.parse(ran.stdout).items, [
     { type: 'card', title: 'Codex', subtitle: 'pro · a@example.com', items: [
-      { type: 'meter', label: '7 days', value: '已用 37%', fraction: 0.626, time: '2026-10-30T01:13:02+08:00', timeLabel: '重置' },
+      { type: 'meter', label: '5 小时', value: '剩余 100%', fraction: 1 },
+      { type: 'meter', label: '7 天', value: '剩余 63%', fraction: 0.63, time: '2026-10-30T01:13:02+08:00', timeLabel: '重置' },
       { type: 'stat', label: '余额', value: '62033.82 credits' },
       { type: 'stat', label: '可用重置', value: '2 次' }] },
     { type: 'card', title: 'WorkBuddy', subtitle: 'Free · 我的', items: [
-      { type: 'meter', label: 'Credits', value: '500 / 2000', fraction: 0.75 }] },
+      { type: 'meter', label: 'Credits', value: '剩余 75%', fraction: 0.75 }] },
     { type: 'card', title: 'Kimi', items: [
-      { type: 'meter', label: 'Monthly', value: '不限' },
+      { type: 'meter', label: '月度', value: '不限' },
       { type: 'error', text: 'the usage endpoint answered 502' }] },
   ]);
 });
