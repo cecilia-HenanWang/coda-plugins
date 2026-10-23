@@ -1,6 +1,7 @@
 // An agent entry that relays a CLI's ACP (grok, opencode, cursor), run as Coda runs it from its manifest, with the CLI stood in
 // for by relay-fixture.mjs at the path the entry looks first (`binary`, under a temporary HOME). What Coda's session
-// instructions become on the way (docs/agent-protocol.md「会话指令」) is checked by `relaysInstructions`.
+// instructions become on the way (docs/agent-protocol.md「会话指令」) is checked by `relaysInstructions`; the CLI's arguments are
+// `argv`, or what `argv` holds true of.
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,7 +36,7 @@ export async function relaysInstructions(t, id, binary, argv) {
   assert.equal((await request(p, 'session/new', { cwd: home, mcpServers: [], systemPrompt: { mode: 'override', content: [] } })).error.code, -32602);
   assert.equal((await request(p, 'session/new', { cwd: home, mcpServers: [], systemPrompt: systemPrompt('# Coda client') })).result.sessionId, 'native');
   const first = await prompt(p, '你好');
-  assert.deepEqual(first.argv, argv);
+  if (typeof argv === 'function') assert.ok(argv(first.argv), JSON.stringify(first.argv)); else assert.deepEqual(first.argv, argv);
   assert.equal(first.leaked, false, 'the agent is not given systemPrompt');
   assert.equal(first.prompt.length, 2);
   assert.match(first.prompt[0].text, /^<coda-session-instructions>\n[^]*\n\n# Coda client\n<\/coda-session-instructions>\n$/);

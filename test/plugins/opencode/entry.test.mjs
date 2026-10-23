@@ -5,8 +5,10 @@ import { test } from 'node:test';
 import { MINIMUM, needed } from '../../../plugins/opencode/scripts/setup.mjs';
 import { relaysInstructions } from '../relay.mjs';
 
-test('the entry relays opencode acp from ~/.opencode/bin and gives it the session instructions on the first prompt only', t =>
-  relaysInstructions(t, 'opencode', '.opencode/bin/opencode', ['acp']));
+// OpenCode's server, which its ACP speaks to, on a port of this machine the entry chose, for OpenCode's events (retries.mjs).
+test('the entry relays opencode acp from ~/.opencode/bin, its server on a port of its own, and gives it the session instructions on the first prompt only', t =>
+  relaysInstructions(t, 'opencode', '.opencode/bin/opencode', argv => argv.length === 5 && argv.slice(0, 4).join(' ') === 'acp --hostname 127.0.0.1 --port'
+    && Number.isInteger(Number(argv[4])) && Number(argv[4]) > 0));
 
 test('setup installs a missing or broken OpenCode, upgrades one older than Coda\'s contract needs, and keeps a newer one', () => {
   const run = (status, stdout = '') => () => ({ status, stdout, stderr: '' });

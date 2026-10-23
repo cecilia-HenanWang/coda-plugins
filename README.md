@@ -77,6 +77,12 @@ Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在
 把指令包在 `<coda-session-instructions>` 里作为单独的一段文本放在用户输入前面，之后与 `session/load` 恢复的会话不再送；
 第一条是斜杠命令时留到下一条。Codex 另声明插话：一轮已经结束时收到的 `_session/steering` 回 `promptRequired`，不另开一轮。
 
+OpenCode 遇到模型服务的 429，会照服务给的 `Retry-After` 等，多久都等（用量窗口满了可能要等到第二天），而且只在它自己的会话状态 `retry` 里说，
+ACP 不转出来，Coda 那一轮就一直显示运行中、没有任何消息。入口让 `opencode acp` 的内部服务开在自己选的本机端口上、用一次性密码（`OPENCODE_SERVER_PASSWORD`），
+订阅它的 `/global/event`；连上之后才把 Coda 的消息转给 OpenCode（内部服务比 ACP 先起来；10 秒还连不上就照常转发），这样第一轮的等待也收得到。
+一轮里 OpenCode 要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮，再把这一轮答成失败，原因是服务给的原文加上 OpenCode 要等多久；
+停下后 OpenCode 回的是什么（可能是 `end_turn`）都不转出。一分钟以内的等待照旧由 OpenCode 自己处理。不在入口里按厂商的错误文字判断额度耗尽。
+
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
 Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 1.0.151（`opencode acp` 第一个报当前模型、恢复的会话能接着跑的版本：之前 `session/load` 不登记会话，下一轮报 Session not found）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
@@ -114,7 +120,7 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
 - **OpenCode**：启动 `opencode acp` 前按接口从每个服务的「地址/models」列出模型，通过子进程的 `OPENCODE_CONFIG_CONTENT` 给每个服务加一个独立 Provider，
   ID 为 `coda-<插件>.<服务>`（如 `coda-magpie.openai`），模型 ID 为 `<Provider>/<模型>`，保留模型名里的斜杠。模型列表、选择与恢复由 OpenCode 原生处理，
   切模型不用重启；服务的标题作为 Provider 名。入口把 OpenCode 报给 Coda 的模型配置项按 Provider 分组（OpenCode 写作「Provider 名/模型名」，
-  组名取前一段、组内取后一段），OpenCode 自己的 Provider 也各成一组；模型 ID 不变。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
+  服务的组名是它完整的标题，标题里有「/」也一样；OpenCode 自己的 Provider 取第一个「/」之前），OpenCode 自己的 Provider 也各成一组；模型 ID 不变。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
   都是 OpenCode 自带的 SDK。Anthropic 请求模型列表用服务给的地址，生成请求的地址若未以 `/v1` 结尾则补上。
   Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。哪个服务列不出模型、接口不支持或 Key 文件读不到，就不添加那一个，其他的与原来的模型照旧。
   已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
@@ -125,7 +131,7 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   `/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
   服务给出 `context_length` / `max_output_tokens` 时用它们；不根据模型名猜测图片与推理能力。
   真 CLI 的本地验证（不使用实际模型服务与登录）：`OPENCODE_TEST_BINARY=/absolute/path/to/opencode node --test test/plugins/opencode/native.test.mjs`，
-  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，以及服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置。
+  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置，以及长短两种 `Retry-After`。
 
 ### Grok 审批模式
 

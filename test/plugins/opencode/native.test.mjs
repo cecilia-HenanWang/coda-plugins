@@ -194,3 +194,49 @@ for (const { api, keyed, regression } of cases)
     }
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'opencode.json'), 'utf8')), nativeConfig);
   });
+
+// OpenCode sits out a Retry-After of an hour as it is, telling only its own events (plugins/opencode/agent/retries.mjs): the
+// entry ends the turn with the service's reason; a second's wait OpenCode sits out, and the session goes on.
+test('real OpenCode: a model service\'s wait past a minute ends the turn with its reason; a shorter one OpenCode sits out',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'coda-opencode-retry-')), turns = [];
+  let agent;
+  t.after(async () => { if (agent) { await agent.terminate(1000); agent.kill(); } rmSync(root, { recursive: true, force: true }); });
+  mkdirSync(join(root, '.opencode/bin'), { recursive: true });
+  symlinkSync(binary, join(root, '.opencode/bin/opencode'));
+  const server = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    const body = raw ? JSON.parse(raw) : {}, messages = body.messages ?? [];
+    // A turn's own request, by what it asks last; the first prompt's title is asked for too, and answered.
+    const asked = JSON.stringify(messages.filter(m => m.role === 'user').at(-1) ?? '');
+    const turn = body.stream && !JSON.stringify(messages.find(m => m.role === 'system') ?? '').includes('title generator')
+      ? (asked.includes('Window') ? 'Window' : 'Moment') : null;
+    const wait = turn === 'Window' ? 3600 : turn === 'Moment' && !turns.includes('Moment') ? 1 : null;
+    if (turn) turns.push(turn);
+    if (wait === null) { answer(response, request.url, body); return; }
+    response.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(wait) });
+    response.end(JSON.stringify({ error: { message: '用量窗口已满，明天 17:42 重置', type: 'rate_limit_error', code: null } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  writeFileSync(join(root, 'opencode.json'), JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'fixture/native', small_model: 'fixture/native', autoupdate: false,
+    provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'fixture-key' },
+      models: { native: { name: 'Native fixture', limit: { context: 32768, output: 4096 } } } } } }));
+  agent = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: root,
+    env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'),
+      XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'), OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true', OPENCODE_DISABLE_MODELS_FETCH: 'true',
+      CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'), CODA_PLUGIN_SETTINGS: '{}' } });
+  const request = (method, params) => agent.request(method, params, { timeout: 45_000 });
+  assert.equal((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).error, undefined);
+  const { sessionId } = (await request('session/new', { cwd: root, mcpServers: [] })).result;
+  const prompt = text => request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+  const started = Date.now(), long = await prompt('Window, please.');
+  assert.ok(Date.now() - started < 30_000, `${Date.now() - started} ms`);
+  assert.equal(long.result, undefined, JSON.stringify(long.result) + agent.stderr);
+  assert.equal(long.error.message, '用量窗口已满，明天 17:42 重置\n\nOpenCode 要等约 1 小时才会重试，这一轮先结束。');
+  const short = await prompt('Moment, please.');
+  assert.equal(short.result?.stopReason, 'end_turn', JSON.stringify(short) + agent.stderr);
+  // Stopped, the long wait is not sat out after all: the service is asked once for it.
+  assert.deepEqual(turns, ['Window', 'Moment', 'Moment']);
+});
