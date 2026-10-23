@@ -68,12 +68,22 @@ export function serviceProvider(service, models) {
 const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\])*"/g, token => token.replaceAll('{', '\\u007b'));
 
 function inlineProvider(text, id, provider) {
-  const errors = [], root = parseTree(text, errors, { allowTrailingComma: true });
+  // Unquoted user templates may become booleans or numbers only when OpenCode expands them. Give those complete nodes
+  // quoted placeholders of the same length for parsing, keeping offsets into the original text. Strings and comments are
+  // consumed first so their templates retain the existing semantics. No environment or file is read by this merge.
+  const templates = new Map();
+  const syntax = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\{(?:env|file):[^}]+\}/g, (token, offset) => {
+    if (!token.startsWith('{')) return token;
+    templates.set(offset, token);
+    return `"${' '.repeat(token.length - 2)}"`;
+  });
+  const errors = [], root = parseTree(syntax, errors, { allowTrailingComma: true });
   if (errors.length) throw new SyntaxError(`OPENCODE_CONFIG_CONTENT 不是有效的 JSONC（位置 ${errors[0].offset}）`);
   if (root?.type !== 'object') throw new SyntaxError('OPENCODE_CONFIG_CONTENT 必须是 JSONC 对象');
-  // Emit strict JSON for older OpenCode releases too, but keep the user's string tokens verbatim. Parsing to values and
-  // re-stringifying would turn the user's own escaped \u007b into '{' and unexpectedly activate a literal template.
-  const render = node => node.type === 'object' ? `{${node.children.map(render).join(',')}}`
+  // Remove JSONC trivia for older OpenCode releases, preserving the user's string tokens and restoring unquoted templates
+  // for OpenCode itself to evaluate. Re-stringifying strings would activate the user's deliberately escaped \u007b.
+  const render = node => node.type === 'string' && templates.has(node.offset) ? templates.get(node.offset)
+    : node.type === 'object' ? `{${node.children.map(render).join(',')}}`
     : node.type === 'array' ? `[${node.children.map(render).join(',')}]`
     : node.type === 'property' ? node.children.map(render).join(':') : text.slice(node.offset, node.offset + node.length);
   const named = (node, key) => node.children[0].value === key;

@@ -56,9 +56,10 @@ function answer(response, path, body) {
 }
 
 const cases = ['openai-completions', 'openai-responses', 'anthropic-messages'].flatMap(api => [true, false].map(keyed => ({ api, keyed })));
-cases.push(...['env', 'file', 'jsonc'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
+cases.push(...['env', 'file', 'jsonc', 'unquoted'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
 for (const { api, keyed, regression } of cases)
-  test(`real OpenCode: ${regression ?? api} (${keyed ? 'service key' : 'keyless'}) models, turn, native model switch and process resume`, { skip: !binary, timeout: 120_000 }, async t => {
+  test(`real OpenCode: ${regression ?? api} (${keyed ? 'service key' : 'keyless'}) models, turn, native model switch and process resume`,
+    { skip: !binary || (regression === 'unquoted' && legacyInline), timeout: 120_000 }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'coda-opencode-native-')), agents = [], requests = [];
     t.after(async () => { for (const agent of agents) { await agent.terminate(1000); agent.kill(); } rmSync(root, { recursive: true, force: true }); });
     mkdirSync(join(root, '.opencode/bin'), { recursive: true });
@@ -97,6 +98,11 @@ for (const { api, keyed, regression } of cases)
             `{ // User's inline overrides still expand; comments and trailing commas are valid.\n "provider": { "fixture": { "options": {
               "apiKey": "{env:OPENCODE_TEST_USER_KEY}", "headers": { "x-user-file": "{file:${privateFile}}", },
             }, }, }, }` } : {}),
+          ...(regression === 'unquoted' ? { OPENCODE_TEST_AUTOUPDATE: 'false', OPENCODE_TEST_CONTEXT: '65536', OPENCODE_TEST_OUTPUT: '1024',
+            OPENCODE_CONFIG_CONTENT: `{ // OpenCode expands these before parsing their boolean/number types.\n
+              "autoupdate": {env:OPENCODE_TEST_AUTOUPDATE}, "provider": { "fixture": { "models": { "native": { "limit": {
+                "context": {env:OPENCODE_TEST_CONTEXT}, "output": {env:OPENCODE_TEST_OUTPUT},
+              }, }, }, }, }, }` } : {}),
           CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'),
           CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProvider': 'fixture/service' }),
           CODA_MODEL_PROVIDERS: JSON.stringify({ 'fixture/service': { api, title: 'Service fixture', url: api === 'anthropic-messages' ? url : `${url}/v1`, ...(keyed ? { keyFile: join(root, 'key') } : {}) } }) },
@@ -150,6 +156,10 @@ for (const { api, keyed, regression } of cases)
       const native = requests.find(r => r.path === '/native/v1/chat/completions');
       assert.equal(native.headers.authorization, legacyInline ? 'Bearer {env:OPENCODE_TEST_USER_KEY}' : 'Bearer user-config-key');
       assert.equal(native.headers['x-user-file'], legacyInline ? `{file:${privateFile}}` : 'synthetic-file-secret');
+    }
+    if (regression === 'unquoted') {
+      const native = requests.find(r => r.path === '/native/v1/chat/completions' && r.body.stream);
+      assert.equal(native.body.max_tokens, 1024);
     }
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'opencode.json'), 'utf8')), nativeConfig);
   });

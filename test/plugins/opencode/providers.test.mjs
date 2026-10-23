@@ -114,8 +114,34 @@ test('inline JSONC merges as strict JSON while preserving both intentional and e
   assert.ok(config.provider['coda-magpie.openai'].models['vendor/{env:SECRET}']);
 });
 
+test('unquoted user templates survive merging as typed values while service templates stay literal', async () => {
+  const source = String.raw`{
+    // A comment with {env:IGNORED} and "quotes" does not change node offsets.
+    "autoupdate": {env:FLAG},
+    "provider": { "native": { "models": { "own": { "limit": {
+      "context": {env:CONTEXT}, "output": {env:OUTPUT},
+    }, }, }, }, },
+    "experimental": { "values": [{env:OUTPUT}, {file:/not-read/by-the-merge},], },
+    "instructions": ["quoted {env:OUTPUT}", "\u007benv:OUTPUT}",],
+  }`;
+  const env = await providerEnvironment({ ...provided(), OPENCODE_CONFIG_CONTENT: source },
+    async () => Response.json({ data: [{ id: 'vendor/{env:OUTPUT}' }] }));
+  assert.ok(env.OPENCODE_CONFIG_CONTENT.includes('"autoupdate":{env:FLAG}'));
+  assert.ok(env.OPENCODE_CONFIG_CONTENT.includes('"output":{env:OUTPUT}'));
+  // Expansion belongs to OpenCode. Test with synthetic values, including a file that does not exist and must not be read
+  // here. The generated provider's template must not be caught by the very same substitutions.
+  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT.replaceAll('{env:FLAG}', 'false').replaceAll('{env:CONTEXT}', '65536')
+    .replaceAll('{env:OUTPUT}', '1024').replaceAll('{file:/not-read/by-the-merge}', '3'));
+  assert.equal(config.autoupdate, false);
+  assert.deepEqual(config.provider.native.models.own.limit, { context: 65536, output: 1024 });
+  assert.deepEqual(config.experimental.values, [1024, 3]);
+  assert.deepEqual(config.instructions, ['quoted 1024', '{env:OUTPUT}']);
+  assert.ok(config.provider['coda-magpie.openai'].models['vendor/{env:OUTPUT}']);
+});
+
 test('invalid JSONC is rejected clearly without echoing user configuration', async () => {
-  for (const source of ['{"apiKey":"sensitive" "missingComma":true}', '{/* unterminated', '[1,2,]', 'null', '{"provider":42}']) {
+  for (const source of ['{"apiKey":"sensitive" "missingComma":true}', '{/* unterminated', '[1,2,]', 'null', '{"provider":42}',
+    '{"autoupdate":{env:FLAG} "missingComma":true}', '{"autoupdate":{env:}}']) {
     await assert.rejects(providerEnvironment({ ...provided(), OPENCODE_CONFIG_CONTENT: source },
       async () => Response.json({ data: [{ id: 'm' }] })), error => {
       assert.ok(error instanceof SyntaxError);
