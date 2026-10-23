@@ -77,3 +77,51 @@ test('only the child inline config changes: native providers, default model and 
   const manifest = JSON.parse(readFileSync(new URL('../../../plugins/opencode/package.json', import.meta.url), 'utf8'));
   assert.equal(manifest.contributes.configuration.properties['opencode.modelProvider'].format, 'coda-model-provider');
 });
+
+test('service data stays literal through OpenCode interpolation, including model keys, names, quotes and backslashes', async () => {
+  const ids = ['vendor/{env:SECRET}', 'vendor/{file:/private/file}', 'vendor/"quote\\{env:SECRET}', String.raw`vendor/\u007benv:SECRET}`];
+  const env = await providerEnvironment(provided({ title: 'Title {env:SECRET}', url: 'https://example.com/{env:SECRET}' }),
+    async () => Response.json({ data: ids.map(id => ({ id })) }));
+  assert.doesNotMatch(env.OPENCODE_CONFIG_CONTENT, /\{(?:env|file):/);
+  const provider = JSON.parse(env.OPENCODE_CONFIG_CONTENT).provider['coda-magpie.openai'];
+  assert.deepEqual(Object.keys(provider.models), ids);
+  assert.deepEqual(Object.values(provider.models).map(model => model.name), ids);
+  assert.equal(provider.name, 'Title {env:SECRET}');
+  assert.equal(provider.options.baseURL, 'https://example.com/{env:SECRET}');
+});
+
+test('inline JSONC merges as strict JSON while preserving both intentional and escaped user templates', async () => {
+  const source = String.raw`{
+    // Existing user configuration; these templates belong to the user.
+    "model": "native/own",
+    "instructions": ["one", "two",],
+    "provider": { "native": { "options": {
+      "apiKey": "{env:USER_KEY}",
+      "headers": { "x-file": "{file:/user/file}", "x-literal": "\u007benv:USER_KEY}", },
+    }, }, },
+  }`;
+  const env = await providerEnvironment({ ...provided(), OPENCODE_CONFIG_CONTENT: source },
+    async () => Response.json({ data: [{ id: 'vendor/{env:SECRET}' }] }));
+  assert.ok(env.OPENCODE_CONFIG_CONTENT.includes(String.raw`"x-literal":"\u007benv:USER_KEY}"`));
+  // The same order as OpenCode: replace text templates, then parse the JSON. User templates still work; service IDs and
+  // a template the user deliberately encoded as a literal do not become reads of the machine's environment or files.
+  const expanded = env.OPENCODE_CONFIG_CONTENT.replaceAll('{env:USER_KEY}', 'user-key').replaceAll('{file:/user/file}', 'user-file');
+  const config = JSON.parse(expanded);
+  assert.equal(config.provider.native.options.apiKey, 'user-key');
+  assert.deepEqual(config.provider.native.options.headers, { 'x-file': 'user-file', 'x-literal': '{env:USER_KEY}' });
+  assert.deepEqual(config.instructions, ['one', 'two']);
+  assert.equal(config.model, 'native/own');
+  assert.ok(config.provider['coda-magpie.openai'].models['vendor/{env:SECRET}']);
+});
+
+test('invalid JSONC is rejected clearly without echoing user configuration', async () => {
+  for (const source of ['{"apiKey":"sensitive" "missingComma":true}', '{/* unterminated', '[1,2,]', 'null', '{"provider":42}']) {
+    await assert.rejects(providerEnvironment({ ...provided(), OPENCODE_CONFIG_CONTENT: source },
+      async () => Response.json({ data: [{ id: 'm' }] })), error => {
+      assert.ok(error instanceof SyntaxError);
+      assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
+      assert.doesNotMatch(error.message, /sensitive/);
+      return true;
+    });
+  }
+});

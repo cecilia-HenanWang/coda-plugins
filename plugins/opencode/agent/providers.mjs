@@ -1,6 +1,7 @@
 // Coda's chosen model service becomes a separate native OpenCode provider, through the child process's inline config.
 // OpenCode lists, selects and resumes its models itself; the machine's own providers and config files stay as they are.
 import { readFileSync } from 'node:fs';
+import { parseTree } from 'jsonc-parser';
 
 export const SETTING = 'opencode.modelProvider';
 const packages = { 'openai-completions': '@ai-sdk/openai-compatible', 'openai-responses': '@ai-sdk/openai', 'anthropic-messages': '@ai-sdk/anthropic' };
@@ -62,6 +63,29 @@ export function serviceProvider(service, models) {
   };
 }
 
+// OpenCode expands {env:...} and {file:...} on the config text BEFORE parsing JSON. Only the generated data is quoted this
+// way: escaping '{' within JSON string tokens preserves their literal value without exposing an interpolation template.
+const literalJSON = value => JSON.stringify(value).replace(/"(?:\\.|[^"\\])*"/g, token => token.replaceAll('{', '\\u007b'));
+
+function inlineProvider(text, id, provider) {
+  const errors = [], root = parseTree(text, errors, { allowTrailingComma: true });
+  if (errors.length) throw new SyntaxError(`OPENCODE_CONFIG_CONTENT 不是有效的 JSONC（位置 ${errors[0].offset}）`);
+  if (root?.type !== 'object') throw new SyntaxError('OPENCODE_CONFIG_CONTENT 必须是 JSONC 对象');
+  // Emit strict JSON for older OpenCode releases too, but keep the user's string tokens verbatim. Parsing to values and
+  // re-stringifying would turn the user's own escaped \u007b into '{' and unexpectedly activate a literal template.
+  const render = node => node.type === 'object' ? `{${node.children.map(render).join(',')}}`
+    : node.type === 'array' ? `[${node.children.map(render).join(',')}]`
+    : node.type === 'property' ? node.children.map(render).join(':') : text.slice(node.offset, node.offset + node.length);
+  const named = (node, key) => node.children[0].value === key;
+  // Like JSON parsing, the last duplicate property wins. Replace only the selected provider, leaving other providers'
+  // source strings (including their intentional templates) unchanged.
+  const existing = root.children.findLast(node => named(node, 'provider'))?.children[1];
+  if (existing && existing.type !== 'object') throw new SyntaxError('OPENCODE_CONFIG_CONTENT 的 provider 必须是对象');
+  const providers = (existing?.children ?? []).filter(node => !named(node, id)).map(render);
+  providers.push(`${literalJSON(id)}:${literalJSON(provider)}`);
+  return `{${[...root.children.filter(node => !named(node, 'provider')).map(render), `"provider":{${providers.join(',')}}`].join(',')}}`;
+}
+
 export async function providerEnvironment(env = process.env, fetcher = fetch) {
   const service = chosenService(env);
   if (!service) return env;
@@ -69,9 +93,7 @@ export async function providerEnvironment(env = process.env, fetcher = fetch) {
   try { models = await serviceModels(service, fetcher); }
   catch (error) { log(`模型服务 ${service.ref} 列不出模型：${error.message}`); return env; }
   if (!models.length) return env;
-  // Do not discard an existing inline override. An invalid one still fails at startup instead of being silently lost.
-  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT || '{}');
-  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('OPENCODE_CONFIG_CONTENT 必须是 JSON 对象');
-  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config,
-    provider: { ...config.provider, [providerId(service.ref)]: serviceProvider(service, models) } }) };
+  // Invalid user configuration still fails clearly, without echoing config contents (which may include credentials).
+  return { ...env, OPENCODE_CONFIG_CONTENT: inlineProvider(env.OPENCODE_CONFIG_CONTENT || '{}',
+    providerId(service.ref), serviceProvider(service, models)) };
 }

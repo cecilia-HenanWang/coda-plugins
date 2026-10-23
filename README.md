@@ -62,7 +62,7 @@ docs/agent-protocol.md   Coda 接入协议正文的公开副本
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
-| `opencode` | 无 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
+| `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
@@ -114,10 +114,12 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   切模型不用重启；服务的标题作为 Provider 名显示。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
   都是 OpenCode 自带的 SDK。Anthropic 请求模型列表用服务给的地址，生成请求的地址若未以 `/v1` 结尾则补上。
   Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。列不出模型、接口不支持或 Key 文件读不到时不添加服务，原来的模型照旧。
-  已有的 inline 配置保留，机器与项目的 Provider 启停限制也仍然有效。`/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
+  已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
+  防止模型 ID、标题等服务数据触发 OpenCode 的 `{env:…}` / `{file:…}` 展开。真正无效的配置仍明确报错。机器与项目的 Provider 启停限制也仍然有效。
+  `/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
   服务给出 `context_length` / `max_output_tokens` 时用它们；不根据模型名猜测图片与推理能力。
   真 CLI 的本地验证（不使用实际模型服务与登录）：`OPENCODE_TEST_BINARY=/absolute/path/to/opencode node --test test/plugins/opencode/native.test.mjs`，
-  覆盖三种接口的请求、服务与原生模型切换，以及进程重启后恢复会话。
+  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，以及服务模型的变量模板与用户 JSONC 配置。
 
 ### Grok 审批模式
 
