@@ -4,7 +4,9 @@
 // puts magpie.app in /Applications (~/Applications when that is not writable) and links the command into ~/.local/bin, or
 // on Linux the command alone there; then `magpie daemon install` runs the gateway as the user's own service (launchd on the
 // Mac, systemd --user on Linux), started at login and again after a failure. Magpie updates itself, so one that runs is
-// kept as it is. Why the machine is not ready is said in one line on standard error.
+// kept as it is. Each time, before a gateway is started, Magpie is told whether to read the agents' own sign-ins as the
+// plugin's setting says (Coda runs this again when it changes). Why the machine is not ready is said in one line on
+// standard error.
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -33,9 +35,10 @@ export function magpieBinary(env = process.env, home = homedir()) {
     '/Applications/magpie.app/Contents/MacOS/magpie', join(home, 'Applications/magpie.app/Contents/MacOS/magpie')].find(executable) ?? null;
 }
 
-// The version a magpie says it is (`magpie 0.1.1320`), null for one that does not run.
-export function versionOf(binary) {
-  const ran = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+// The version a magpie says it is (`magpie 0.1.1320`), null for one that does not run. Asked so, magpie first moves its
+// files as it starts (internal/cli/main.go run), which may read the agents' sign-ins: with `env` holding them unread.
+export function versionOf(binary, env = process.env) {
+  const ran = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'], env });
   return ran.status === 0 ? /(\d+(?:\.\d+)+)/.exec(ran.stdout ?? '')?.[1] ?? `${ran.stdout ?? ''}`.trim().split('\n')[0] : null;
 }
 
@@ -45,6 +48,10 @@ export function versionOf(binary) {
 // request with it. A Coda that gives none, the PATH as it is.
 export const servicePath = (env = process.env) => env.CODA_USER_PATH ?? env.PATH ?? '';
 
+// Whether Magpie reads the agents' own sign-ins (`magpie.accountDiscovery`, on unless set off, as Magpie's own default):
+// Magpie keeps it in its settings (its Settings › Privacy › Subscription accounts), and a gateway running goes by it at once.
+export const discovery = (env = process.env) => JSON.parse(env.CODA_PLUGIN_SETTINGS || '{}')['magpie.accountDiscovery'] !== false;
+
 const fail = message => { console.error(message); process.exit(1); };
 
 async function main() {
@@ -53,17 +60,23 @@ async function main() {
   if (process.env.MAGPIE_ADDR && process.env.MAGPIE_ADDR !== address)
     fail(`MAGPIE_ADDR=${process.env.MAGPIE_ADDR} 让 Magpie 网关不在 ${address}，而插件的模型服务指向那里：去掉它再安装`);
   const found = await answering(address);
-  if (found === 'gateway') { console.log(`Magpie 网关 http://${address}`); return; }
   if (found === 'other') fail(`${address} 上的服务不是 Magpie 网关（它的 /v1/models 不是模型列表）：先停掉它再安装`);
+  // Until Magpie keeps the setting off, what asks magpie its version runs it with the sign-ins unread (MAGPIE_NO_ACCOUNTS
+  // only ever turns them off, for that one run); `magpie accounts discovery` reads none itself.
+  const probe = discovery() ? process.env : { ...process.env, MAGPIE_NO_ACCOUNTS: '1' };
   let binary = magpieBinary();
-  if (!binary || !versionOf(binary)) {
+  if (found !== 'gateway' && (!binary || !versionOf(binary, probe))) {
     const reason = binary ? `Magpie 无法运行（${binary}）` : '这台机器上没有 Magpie';
     // What the installer prints goes to standard error with the rest of its story.
     const installed = spawnSync('bash', ['-c', 'set -o pipefail; curl -fsSL https://usemagpie.ai/install.sh | sh'], { stdio: ['ignore', 2, 2] });
     if (installed.status !== 0) fail(`${reason}，安装失败（退出码 ${installed.status ?? installed.signal}）`);
     binary = magpieBinary();
-    if (!binary || !versionOf(binary)) fail(`${reason}，安装后仍找不到能运行的 magpie`);
+    if (!binary || !versionOf(binary, probe)) fail(`${reason}，安装后仍找不到能运行的 magpie`);
   }
+  if (!binary) fail(`http://${address} 上的 Magpie 网关在应答，但这台机器上找不到 magpie 命令，没法设置是否读取 Agent 自己的登录`);
+  const said = spawnSync(binary, ['accounts', 'discovery', discovery() ? 'on' : 'off'], { stdio: ['ignore', 2, 2], timeout: 30_000 });
+  if (said.status !== 0) fail(`没能设置 Magpie 是否读取 Agent 自己的登录（magpie accounts discovery 退出码 ${said.status ?? said.signal}）`);
+  if (found === 'gateway') { console.log(`Magpie 网关 http://${address}`); return; }
   const daemon = spawnSync(binary, ['daemon', 'install'], { stdio: ['ignore', 2, 2], timeout: 120_000, env: { ...process.env, PATH: servicePath() } });
   if (daemon.status !== 0) fail(`没能让 Magpie 网关常驻（magpie daemon install 退出码 ${daemon.status ?? daemon.signal}）`);
   for (let i = 0; i < 30 && await answering(address) !== 'gateway'; i++) await delay(1000);

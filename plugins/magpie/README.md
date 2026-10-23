@@ -20,18 +20,26 @@ Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 
 
 ## 安装
 
-「设置 › 插件」的市场里选「Magpie」安装。插件的设置动作（`scripts/setup.mjs`）在你安装或更新插件时于每台机器上运行：
+「设置 › 插件」的市场里选「Magpie」安装。插件的设置动作（`scripts/setup.mjs`）在你安装、更新插件或改了它的设置时于每台机器上运行：
 
-1. 网关已经在应答（开着 Magpie 的 App，或已有它的常驻服务），什么都不动。
+1. 网关已经在应答（开着 Magpie 的 App，或已有它的常驻服务），只按[设置](#设置)告诉 Magpie 读不读 Agent 的登录，别的不动。
 2. 没有能运行的 `magpie`，用官方安装程序装上（`curl -fsSL https://usemagpie.ai/install.sh | sh`）：Mac 上把 magpie.app 放进 `/Applications`
    （不可写时 `~/Applications`），命令链接到 `~/.local/bin/magpie`；Linux 上只装命令。已有的不动，Magpie 自己会更新。
-3. 运行 `magpie daemon install`，把网关装成你自己的常驻服务（Mac 是 launchd 的 `com.yetone.magpie.serve`，Linux 是 `systemctl --user` 的 `magpie`），
+3. 按设置告诉 Magpie 读不读 Agent 的登录，再运行 `magpie daemon install`，把网关装成你自己的常驻服务（Mac 是 launchd 的 `com.yetone.magpie.serve`，Linux 是 `systemctl --user` 的 `magpie`），
    登录时启动、出错后重启；然后等网关应答。服务记住的 PATH 是 Coda 给 Coda 以外的程序的那份（`CODA_USER_PATH`，不含 Coda 自己的目录）：
    Magpie 会读 PATH 上每个目录找各家 CLI，由 launchd 启动的它去读 Coda 的目录时可能被 macOS 一直挂着，之后的请求就都卡住。
 
 设置动作只认模型服务指向的 `127.0.0.1:3425`：后端的环境里设了指向别处的 `MAGPIE_ADDR`（magpie 和它装的服务都照它监听）时，设置动作直接报错，不安装。
 
-每台机器各跑自己的 Magpie，读的是这台机器上 Claude Code、Codex 等的登录（Magpie 的「订阅账号」，可在它的 Settings › Privacy 关掉）。
 provider 和账号在 Magpie 里加：Mac 打开 magpie.app，或在终端里 `magpie provider add …`、`magpie tui`。
+
+## 设置
+
+| 设置 | 默认 | 内容 |
+| --- | --- | --- |
+| `magpie.accountDiscovery`（读取 Agent 自己的登录） | 开 | 开着时 Magpie 读这台机器上 Codex（`~/.codex/auth.json` 与钥匙串）、Claude Code、Gemini、Copilot、Cursor 等自己的登录，把它们的订阅作为模型提供。关掉后一个都不读，只用在 Magpie 里以 API Key 添加的服务；它存下的登录副本留着，再打开就回来。Magpie 只有这一个总开关，不能只关某一家 |
+
+它就是 Magpie 的「Settings › Privacy › Subscription accounts」（`magpie accounts discovery on|off`）。设置动作每次运行都按这里写进 Magpie，
+所以以这里为准：在 Magpie 里改了，下次安装、更新或改这个设置时会被改回来。运行中的网关立即照新的来，不用重启。
 
 卸载插件不会卸掉 Magpie 和它的服务；要去掉就 `magpie daemon uninstall`，再删 App 与 `~/.local/bin/magpie`。
