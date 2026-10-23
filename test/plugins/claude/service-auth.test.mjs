@@ -49,7 +49,7 @@ test('the real Claude Code sends the service its own token, and none of the mach
   const session = new ClaudeSession({ sdk, env: { ...process.env, HOME: root, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1',
     // The machine's environment: its own way to the API, with a key, an OAuth token and a header of its own.
     ANTHROPIC_BASE_URL: `${at}/native`, ANTHROPIC_API_KEY: 'sk-ant-api03-process', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-process', ANTHROPIC_CUSTOM_HEADERS: 'X-Secret: process',
-    CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }),
+    CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': ['magpie/anthropic'] }),
     CODA_MODEL_PROVIDERS: JSON.stringify({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: `${at}/service` } }) } });
   t.after(() => session.close());
   await session.open({ cwd, mcpServers: [] });

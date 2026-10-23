@@ -11,42 +11,61 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { ServiceModels, chosenService, servedCodexModels, serviceModels } from '../../../plugins/codex/agent/providers.mjs';
+import { ServiceModels, chosenServices, servedCodexModels, serviceModels } from '../../../plugins/codex/agent/providers.mjs';
 import { resolveFrom } from '../plugin.mjs';
 import { pluginEnv } from '../command.mjs';
 
 const bundle = await readFile(resolveFrom('codex', '@agentclientprotocol/codex-acp'), 'utf8');
 const magpie = { plugin: 'magpie', title: 'Magpie · OpenAI Responses', api: 'openai-responses', url: 'http://127.0.0.1:3425/v1' };
-const provided = (services, ref = 'magpie/responses') => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'codex.modelProvider': ref }), CODA_MODEL_PROVIDERS: JSON.stringify(services) });
+const provided = (services, chosen = Object.keys(services)) => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'codex.modelProviders': chosen }), CODA_MODEL_PROVIDERS: JSON.stringify(services) });
 
-test('the service chosen is the one of this machine that speaks the Responses API, with its key read from its file', t => {
+test('the services chosen are those of this machine that speak the Responses API, in the order chosen, each key read from its file', t => {
   const dir = mkdtempSync(join(tmpdir(), 'coda-codex-providers-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  assert.equal(chosenService({}), null, 'none chosen');
-  assert.deepEqual(chosenService(provided({ 'magpie/responses': magpie })), { ref: 'magpie/responses', title: 'Magpie · OpenAI Responses', url: 'http://127.0.0.1:3425/v1', key: undefined });
+  assert.deepEqual(chosenServices({}), [], 'none chosen');
+  assert.deepEqual(chosenServices({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'codex.modelProviders': 'magpie/responses' }) }), [], 'one written before it was several is none');
   writeFileSync(join(dir, 'key'), 'sk-service\n');
-  assert.equal(chosenService(provided({ 'magpie/responses': { ...magpie, keyFile: join(dir, 'key') } })).key, 'sk-service');
-  assert.equal(chosenService(provided({})), null, 'not on this machine');
   // Codex no longer speaks Chat Completions (`wire_api = "chat"` is refused).
-  assert.equal(chosenService(provided({ 'cliproxy/cliproxy': { ...magpie, api: 'openai-completions' } }, 'cliproxy/cliproxy')), null);
+  assert.deepEqual(chosenServices(provided({ 'magpie/responses': { ...magpie, keyFile: join(dir, 'key') }, 'cliproxy/cliproxy': { ...magpie, api: 'openai-completions' },
+    'space/s-proxy': { ...magpie, title: 'rig · Proxy', url: 'http://127.0.0.1:4000/v1' } }, ['space/s-proxy', 'gone/x', 'cliproxy/cliproxy', 'magpie/responses'])), [
+    { ref: 'space/s-proxy', title: 'rig · Proxy', url: 'http://127.0.0.1:4000/v1', key: undefined },
+    { ref: 'magpie/responses', title: 'Magpie · OpenAI Responses', url: 'http://127.0.0.1:3425/v1', key: 'sk-service' }], 'one not on this machine, or of another API, is left out');
 });
 
-test('its models are listed as Codex\'s model list has them, named by the model and the service', async () => {
+test('its models are listed as Codex\'s model list has them, named by the model, in the service\'s group', async () => {
   const asked = [];
   const fetcher = async (url, { headers }) => { asked.push([url, headers]); return Response.json({ data: [{ id: 'deepseek/deepseek-v4-pro' }, { id: '' }] }); };
   assert.deepEqual(await serviceModels({ ref: 'magpie/responses', title: 'Magpie · OpenAI Responses', url: 'http://127.0.0.1:3425/v1/' }, fetcher), [{
-    id: 'magpie/responses/deepseek/deepseek-v4-pro', model: 'deepseek/deepseek-v4-pro', displayName: 'deepseek/deepseek-v4-pro (Magpie · OpenAI Responses)',
-    description: '', hidden: false, isDefault: false, supportedReasoningEfforts: [], defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], serviceTiers: [] }]);
+    id: 'magpie/responses/deepseek/deepseek-v4-pro', model: 'deepseek/deepseek-v4-pro', displayName: 'deepseek/deepseek-v4-pro',
+    description: '', hidden: false, isDefault: false, supportedReasoningEfforts: [], defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], serviceTiers: [],
+    codaService: 'magpie/responses', codaGroup: 'Magpie · OpenAI Responses' }]);
   await serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com/v1', key: 'sk' }, fetcher);
   assert.deepEqual(asked, [['http://127.0.0.1:3425/v1/models', {}], ['https://example.com/v1/models', { Authorization: 'Bearer sk' }]]);
   // Listed once a process; one that cannot list now adds none.
-  const services = new ServiceModels({ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' });
+  const services = new ServiceModels([{ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' }]);
   assert.deepEqual(await services.list(), []);
   assert.equal(services.list(), services.list());
 });
 
+test('several services: their models a group each after Codex\'s own, in the order chosen; a turn on one\'s model moves the session to that one', async () => {
+  const lists = { 'http://a/v1/models': ['fake/alpha'], 'http://b/v1/models': ['fake/beta'] };
+  const services = new ServiceModels([{ ref: 'b/responses', title: 'B', url: 'http://b/v1' }, { ref: 'a/responses', title: 'A', url: 'http://a/v1', key: 'sk-a' }],
+    async url => Response.json({ data: lists[url].map(id => ({ id })) }));
+  await services.list();
+  const options = [{ value: 'fake', name: 'Fake' }, { value: 'b/responses/fake/beta', name: 'fake/beta' }, { value: 'a/responses/fake/alpha', name: 'fake/alpha' }];
+  assert.deepEqual(services.grouped(options).map(g => [g.group, g.name, g.options.map(o => o.value)]),
+    [['codex', 'Codex', ['fake']], ['b/responses', 'B', ['b/responses/fake/beta']], ['a/responses', 'A', ['a/responses/fake/alpha']]]);
+  assert.deepEqual(services.grouped(options.slice(0, 1)), options.slice(0, 1), 'Codex\'s alone stay one plain list');
+  const moves = [], state = { currentModelId: 'b/responses/fake/beta' };
+  const server = { sessions: new Map([['s', state]]), codexAcpClient: { appServerClient: { threadRead: async () => ({ thread: {} }) } },
+    setProvider: async p => moves.push([p.baseUrl, p.headers]), disableProvider: async () => moves.push(['Codex']) };
+  const turn = async model => { state.currentModelId = model; await services.move(server, { sessionId: 's', prompt: [] }); };
+  await turn('b/responses/fake/beta'); await turn('a/responses/fake/alpha'); await turn('a/responses/fake/alpha'); await turn('fake');
+  assert.deepEqual(moves, [['http://b/v1', {}], ['http://a/v1', { Authorization: 'Bearer sk-a' }], ['Codex']], 'another of the same service moves nothing');
+});
+
 test('what Codex says of the service\'s models it does not know is not said in the session; the rest is', async () => {
-  const services = new ServiceModels({ ref: 'magpie/responses', title: 'M', url: 'http://x' }, async () => Response.json({ data: [{ id: 'fake/alpha' }] }));
+  const services = new ServiceModels([{ ref: 'magpie/responses', title: 'M', url: 'http://x' }], async () => Response.json({ data: [{ id: 'fake/alpha' }] }));
   await services.list();
   assert.equal(services.wire('magpie/responses/fake/alpha'), 'fake/alpha');
   assert.equal(services.wire('gpt-5.5'), 'gpt-5.5');
@@ -62,7 +81,7 @@ test('the patch applies to the locked codex-acp, and fails loudly once it change
   assert.ok(served.startsWith('import { services as codaServices } from '), 'its own executable header gone');
   for (const added of ['return [...models, ...await codaServices.list()];', 'if (await codaServices.route(this, params)) return { stopReason: "cancelled" };',
     'codaServices.cancel(params.sessionId);', 'model: codaServices.wire(modelId.model),',
-    'if (codaServices.quiet(notification.params)) return null;']) assert.equal(served.split(added).length, 2, added);
+    'if (codaServices.quiet(notification.params)) return null;', 'options: codaServices.grouped(options),']) assert.equal(served.split(added).length, 2, added);
   const checked = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: served, encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stderr);
   assert.throws(() => servedCodexModels(bundle.replace('      model: modelId.model,\n      serviceTier\n', '      model: modelId.model,\n')), /no longer matches/);
@@ -113,7 +132,8 @@ async function entryOnService(t, env = {}) {
 test('through the real entry: a turn on the service\'s model runs on the session moved to the service, and one on Codex\'s own moves it back', async t => {
   const { url, opened, set, prompt, threads, turns } = await entryOnService(t);
   const models = opened.configOptions.find(o => o.category === 'model');
-  assert.deepEqual(models.options.map(o => [o.value, o.name]), [['fake', 'Fake'], ['magpie/responses/fake/alpha', 'fake/alpha (Magpie · OpenAI Responses)']]);
+  assert.deepEqual(models.options.map(g => [g.group, g.name, g.options.map(o => [o.value, o.name])]), [['codex', 'Codex', [['fake', 'Fake']]],
+    ['magpie/responses', 'Magpie · OpenAI Responses', [['magpie/responses/fake/alpha', 'fake/alpha']]]]);
   const chosen = (await set('magpie/responses/fake/alpha')).result.configOptions;
   assert.equal(chosen.find(o => o.category === 'model').currentValue, 'magpie/responses/fake/alpha');
   assert.equal(chosen.find(o => o.category === 'thought_level'), undefined, 'no effort to choose');

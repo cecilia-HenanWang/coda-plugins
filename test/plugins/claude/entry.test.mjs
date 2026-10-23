@@ -671,28 +671,33 @@ test('the session publishes its title as session info, and a stopped turn starts
   assert.deepEqual(info, { sessionUpdate: 'session_info_update', title: '隐藏空白思考' });
 });
 
-// A model service of another plugin, as Coda hands it to Claude's processes (docs/plugins.md「模型服务」): listing two models.
-async function modelService(t) {
+// A model service of another plugin, as Coda hands it to Claude's processes (docs/plugins.md「模型服务」): listing `models`;
+// `env` chooses it alone.
+async function modelService(t, { ref = 'magpie/anthropic', title = 'Magpie · Anthropic', models = ['fake/alpha', 'fake/beta'] } = {}) {
   const { createServer } = await import('node:http');
   const asked = [];
   const server = createServer((request, response) => {
     asked.push(request.url);
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ data: [{ id: 'fake/alpha' }, { id: 'fake/beta' }] }));
+    response.end(JSON.stringify({ data: models.map(id => ({ id })) }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}`;
-  return { asked, url, env: { CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }),
-    CODA_MODEL_PROVIDERS: JSON.stringify({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url } }) } };
+  const url = `http://127.0.0.1:${server.address().port}`, provided = { [ref]: { plugin: ref.split('/')[0], title, api: 'anthropic-messages', url } };
+  return { asked, url, ref, provided, env: chosen(provided) };
 }
+// The services Coda hands Claude's processes, all chosen in this order.
+const chosen = provided => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': Object.keys(provided) }), CODA_MODEL_PROVIDERS: JSON.stringify(provided) });
 
 test('the chosen model service\'s models are listed beside Claude\'s own; a turn on one runs in a query of its own with the service as its API', async t => {
   const service = await modelService(t);
   const c = await setup(t, { env: service.env });
   const opened = await c.open(), first = queries.get(c.sessionId);
-  assert.deepEqual(opened.configOptions.find(o => o.id === 'model').options.slice(-3), [{ value: 'claude-custom-1', name: 'Custom (claude-custom-1)' },
-    { value: 'magpie/anthropic/fake/alpha', name: 'fake/alpha (Magpie · Anthropic)' }, { value: 'magpie/anthropic/fake/beta', name: 'fake/beta (Magpie · Anthropic)' }]);
+  // Grouped by where they come from: Claude's own, then the service's under its title, each named by the model alone.
+  const groups = opened.configOptions.find(o => o.id === 'model').options;
+  assert.deepEqual(groups.map(g => [g.group, g.name, g.options.at(-1)]), [['claude', 'Claude', { value: 'claude-custom-1', name: 'Custom (claude-custom-1)' }],
+    ['magpie/anthropic', 'Magpie · Anthropic', { value: 'magpie/anthropic/fake/beta', name: 'fake/beta' }]]);
+  assert.deepEqual(groups[1].options.map(o => o.value), ['magpie/anthropic/fake/alpha', 'magpie/anthropic/fake/beta']);
   assert.deepEqual(service.asked, ['/models?limit=1000']);
   const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value });
   await set('effort', 'high');
@@ -764,9 +769,20 @@ test('a turn stopped while the session moves to the service\'s query ends cancel
   assert.equal(queries.get(c.sessionId).options.model, 'fake/alpha');
 });
 
+test('several model services chosen are a group each, in the order chosen; a turn on one\'s model runs with that service as the API', async t => {
+  const magpie = await modelService(t), proxy = await modelService(t, { ref: 'proxy/anthropic', title: 'Proxy · Anthropic', models: ['fake/gamma'] });
+  const c = await setup(t, { env: chosen({ ...proxy.provided, ...magpie.provided }) });
+  const groups = (await c.open()).configOptions.find(o => o.id === 'model').options;
+  assert.deepEqual(groups.map(g => [g.group, g.name, g.options.length]), [['claude', 'Claude', 4], ['proxy/anthropic', 'Proxy · Anthropic', 1], ['magpie/anthropic', 'Magpie · Anthropic', 2]]);
+  const set = (configId, value) => c.request('session/set_config_option', { sessionId: c.sessionId, configId, value });
+  await set('model', 'proxy/anthropic/fake/gamma'); await c.prompt('hello');
+  assert.deepEqual([queries.get(c.sessionId).options.model, queries.get(c.sessionId).options.settings.env.ANTHROPIC_BASE_URL], ['fake/gamma', proxy.url]);
+  await set('model', 'magpie/anthropic/fake/alpha'); await c.prompt('again');
+  assert.deepEqual([queries.get(c.sessionId).options.model, queries.get(c.sessionId).options.settings.env.ANTHROPIC_BASE_URL], ['fake/alpha', magpie.url]);
+});
+
 test('without a model service chosen, or with one that cannot list its models, the session has Claude\'s own alone', async t => {
-  const c = await setup(t, { env: { CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }),
-    CODA_MODEL_PROVIDERS: JSON.stringify({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:1' } }) } });
+  const c = await setup(t, { env: chosen({ 'magpie/anthropic': { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:1' } }) });
   const models = (await c.open()).configOptions.find(o => o.id === 'model').options.map(o => o.value);
   assert.deepEqual(models, ['fixture-model-v1', 'other-model', 'fixture-model-v1[1m]', 'claude-custom-1']);
   assert.deepEqual(queries.get(c.sessionId).options.settings, { crossSessionInbound: 'refuse' });

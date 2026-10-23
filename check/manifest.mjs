@@ -57,7 +57,17 @@ function schema(value, where, entry = false) {
   check(!STRING_FORMATS.includes(value.format) || value.type === 'string', `${where}：${value.format} 是文本`);
   check(value.enum === undefined || (Array.isArray(value.enum) && value.enum.length && ['string', 'integer', 'number'].includes(value.type)), `${where} 的 enum 无效`);
   const out = { type: value.type, format: value.format, enum: value.enum, minimum: value.minimum, maximum: value.maximum };
-  if (value.type === 'array') {
+  if (value.type === 'array' && value.items?.format === 'coda-model-provider') {
+    // Several model services (plugin-rules.mjs `schema`): `<plugin>/<id>` each; `modelApis` the interfaces the plugin takes.
+    const items = value.items;
+    check(value.format === undefined && value.minimum === undefined && value.maximum === undefined, `${where}：多个模型服务不写 format、minimum 与 maximum`);
+    check(value.uniqueItems === undefined || value.uniqueItems === true, `${where}：多个模型服务的 uniqueItems 只能是 true`);
+    check(Object.keys(items).every(k => ['type', 'format', 'modelApis'].includes(k)) && items.type === 'string',
+      `${where}：多个模型服务写 items: { type: string, format: coda-model-provider, modelApis }`);
+    check(items.modelApis === undefined || (Array.isArray(items.modelApis) && items.modelApis.length >= 1 && items.modelApis.length <= 10
+      && items.modelApis.every(api => typeof api === 'string' && COMMAND.test(api))), `${where}.items.modelApis 须为 1–10 个接口名，如 anthropic-messages`);
+    out.format = 'coda-model-provider';
+  } else if (value.type === 'array') {
     check(value.format === undefined && value.minimum === undefined && value.maximum === undefined, `${where}：多选不写 format、minimum 与 maximum`);
     check(value.uniqueItems === undefined || value.uniqueItems === true, `${where}：多选的 uniqueItems 只能是 true（每项至多选一次）`);
     const items = value.items, options = items?.anyOf;
@@ -91,6 +101,10 @@ function checkValue(spec, value, where) {
   // An agent combination: Coda also checks model, effort, mode and options (domain/commands.mjs settings); here only the agent.
   if (spec.format === 'coda-agent') {
     check(value && typeof value === 'object' && !Array.isArray(value) && typeof value.agent === 'string' && AGENT_ID.test(value.agent), `${where} 须为 Agent 组合，并指明 Agent`);
+    return;
+  }
+  if (spec.type === 'array' && spec.format === 'coda-model-provider') {
+    check(Array.isArray(value) && value.length <= 20 && value.every(v => typeof v === 'string' && MODEL_PROVIDER.test(v)), `${where}须为至多 20 个「插件/服务」，如 cliproxy/cliproxy`);
     return;
   }
   if (spec.type === 'array') {

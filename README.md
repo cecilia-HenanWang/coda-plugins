@@ -11,7 +11,7 @@ plugins/codex/           Codex：入口在同一进程里运行锁定版本的 c
 plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（npm 依赖），面板「Claude」
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，面板「Kimi」
 plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，面板「Grok」
-plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务
+plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务，模型按来源分组
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
@@ -84,17 +84,19 @@ Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作�
 
 ### 模型服务
 
-Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.modelProvider`、`codex.modelProvider`、`opencode.modelProvider`，`format: coda-model-provider`），
-选一个别的插件提供的[模型服务](https://github.com/coda-console/coda/blob/main/docs/plugins.md#模型服务)，如 Magpie。
+Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.modelProviders`、`codex.modelProviders`、`opencode.modelProviders`），
+勾选任意几个别的插件提供的[模型服务](https://github.com/coda-console/coda/blob/main/docs/plugins.md#模型服务)，如 Magpie、CLIProxy；
+设置写的是 Coda 的「多个模型服务」（`type: array`，`items.format: coda-model-provider`，`items.modelApis` 写各自接得住的接口，客户端只列这些）。
+会话的模型按来源分组上报（ACP 选择型配置项的分组，Coda 的 docs/agent-protocol.md「模型的分组」）：Agent 自己的一组，每个勾选的服务一组、组名是服务标题，组内只写模型名。
 只经会话进程的启动参数与按会话的覆盖生效，不改运行机上的 `~/.claude/settings.json`、`~/.codex/config.toml`、`opencode.json`；不选、或提供它的插件卸载了，与原来一样。
 
 - **接口**：Claude 只接 `anthropic-messages` 的服务，Codex 只接 `openai-responses` 的（Codex 0.162 已不接受 `wire_api = "chat"`）。
   OpenCode 接 `openai-completions`、`openai-responses` 与 `anthropic-messages`。
-  选了别的接口的服务，入口只在标准错误记一行，不列它的模型。
-- **Claude / Codex 模型**：会话打开时从服务的「地址/models」列出模型，问法同 Coda 的「检查可用模型」（Claude 带 `x-api-key`，Codex 带 `Authorization: Bearer`），
-  排在 Agent 自己的模型后面：ID 是 `<服务>/<模型>`（如 `magpie/anthropic/deepseek/deepseek-v4-pro`），名字是「<模型> (<服务标题>)」，没有推理强度可选。
-  列不出来时只有 Agent 自己的模型。
-- **Claude / Codex 何时换**：选模型只是记下（Coda 读模型目录时会把每个模型都选一遍，不该因此启动什么）；下一轮开始前，所选模型的服务与会话正在用的不同，才把会话换过去。
+  勾了别的接口的服务（旧设置留下的），入口只在标准错误记一行，不列它的模型。
+- **Claude / Codex 模型**：会话打开时从每个服务的「地址/models」列出模型（各服务同时问），问法同 Coda 的「检查可用模型」（Claude 带 `x-api-key`，Codex 带 `Authorization: Bearer`），
+  按勾选的先后排在 Agent 自己的模型后面：ID 是 `<服务>/<模型>`（如 `magpie/anthropic/deepseek/deepseek-v4-pro`），名字只是模型（如 `deepseek/deepseek-v4-pro`），
+  在服务那一组里，没有推理强度可选。哪个服务列不出来就没有它那一组，其他的照旧。Codex 的分组在 codex-acp 生成模型配置项的地方打补丁做。
+- **Claude / Codex 何时换**：选模型只是记下（Coda 读模型目录时会把每个模型都选一遍，不该因此启动什么）；下一轮开始前，所选模型的服务与会话正在用的不同（换到另一个服务、或回到自己的），才把会话换过去。
 - **Claude**：以 `resume` 新起一个 SDK 会话（还没说过话的会话用同一个会话 ID 新起），flag settings 的 `env` 设 `ANTHROPIC_BASE_URL`、
   `ANTHROPIC_AUTH_TOKEN`（服务的 Key，没有 Key 写 `none`）与 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、
   `CLAUDE_CODE_SUBAGENT_MODEL`（子 Agent、标题等后台调用也用这个模型）。运行机自己通往 API 的办法一样都不带过去：`ANTHROPIC_API_KEY`、
@@ -109,11 +111,12 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   codex-acp 在 resume 之前就记下了 gateway，新 app-server 起不来时还留着已关闭的旧客户端，都不能拿来当换成了）。
   一句话都还没说的线程 Codex 没有写下来，resume 不了：先以第一条消息（前 80 字）为名 `thread/name/set` 把它写下，这也就成了会话标题（不再由 Codex 生成）。
   Codex 没有服务的模型的元数据，它为此发的「Model metadata … not found」与恢复时的「recorded with model …」提示不进会话。
-- **OpenCode**：启动 `opencode acp` 前按接口从「地址/models」列出模型，通过子进程的 `OPENCODE_CONFIG_CONTENT` 加一个独立 Provider，
+- **OpenCode**：启动 `opencode acp` 前按接口从每个服务的「地址/models」列出模型，通过子进程的 `OPENCODE_CONFIG_CONTENT` 给每个服务加一个独立 Provider，
   ID 为 `coda-<插件>.<服务>`（如 `coda-magpie.openai`），模型 ID 为 `<Provider>/<模型>`，保留模型名里的斜杠。模型列表、选择与恢复由 OpenCode 原生处理，
-  切模型不用重启；服务的标题作为 Provider 名显示。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
+  切模型不用重启；服务的标题作为 Provider 名。入口把 OpenCode 报给 Coda 的模型配置项按 Provider 分组（OpenCode 写作「Provider 名/模型名」，
+  组名取前一段、组内取后一段），OpenCode 自己的 Provider 也各成一组；模型 ID 不变。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
   都是 OpenCode 自带的 SDK。Anthropic 请求模型列表用服务给的地址，生成请求的地址若未以 `/v1` 结尾则补上。
-  Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。列不出模型、接口不支持或 Key 文件读不到时不添加服务，原来的模型照旧。
+  Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。哪个服务列不出模型、接口不支持或 Key 文件读不到，就不添加那一个，其他的与原来的模型照旧。
   已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
   防止模型 ID、标题等服务数据触发 OpenCode 的 `{env:…}` / `{file:…}` 展开。真正无效的配置仍明确报错。机器与项目的 Provider 启停限制也仍然有效。
   用户未加引号的布尔值、数字等变量节点在解析时暂用等长占位节点，合并后原样还原，由 OpenCode 自己展开；合并器不读取它们引用的环境变量或文件。

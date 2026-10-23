@@ -3,7 +3,7 @@
   "id": "opencode",
   "displayName": "OpenCode",
   "description": "OpenCode Agent：Coda 的入口在运行机的 opencode acp 与 Coda 之间转发，并把会话指令放进原生会话的第一轮。",
-  "version": "1.2.4",
+  "version": "1.3.0",
   "contributes": {
     "agents": [
       {
@@ -34,12 +34,16 @@
     "configuration": {
       "title": "OpenCode",
       "properties": {
-        "opencode.modelProvider": {
-          "type": "string",
-          "format": "coda-model-provider",
+        "opencode.modelProviders": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "coda-model-provider",
+            "modelApis": ["openai-completions", "openai-responses", "anthropic-messages"]
+          },
           "title": "模型服务",
           "order": 1,
-          "description": "选一个插件提供的模型服务（如 Magpie），它列出的模型和 OpenCode 自己的模型一起出现在会话的模型里；选中它的模型，那个会话就走这个服务。支持 OpenAI Chat、OpenAI Responses 和 Anthropic 接口。"
+          "description": "勾选插件提供的模型服务（如 Magpie），每个服务各成一组，它列出的模型和 OpenCode 自己的模型一起出现在会话的模型里；选中哪个服务的模型，那个会话就走那个服务。可选 OpenAI Chat、OpenAI Responses 和 Anthropic 接口的服务。"
         }
       }
     },

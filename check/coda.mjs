@@ -5,7 +5,7 @@
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 
 // The Coda commit these rules were copied from (an empty current mode is none chosen).
-export const CODA_COMMIT = '52831f0e2a09b16187f254ad2d19e270723bdc3b';
+export const CODA_COMMIT = 'a52459b1f950957923a6e187075ba981263279f4';
 // The ACP version Coda speaks: the SDK's (backend/package.json pins @agentclientprotocol/sdk 1.4.0, as package.json here).
 export const ACP_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
@@ -76,13 +76,14 @@ export const TERM_GRACE = 800;
 // adapters/acp.mjs `open` and application/option-cache.mjs: opening a session (initialize, session/new or session/load) may take this.
 export const OPEN_LIMIT = 60_000;
 
-// ---- What every process Coda runs for a plugin is given (backend/src/domain/plugins.mjs pluginEnv, cleared) ----
+// ---- What every process Coda runs for a plugin is given (backend/src/components/plugins/plugin-rules.mjs pluginEnv, cleared) ----
 // Its agents', its panels' and the commands it brings alike: Coda's own Node, the plugin's directory, its state, its settings,
 // what is plugged into its points (none here: the checker installs nothing beside it), where the plugins it depends on are
 // (`dependencies`, by ID), and CODA_ARBITER only for an instance's own backend, which the checker is not. What a process
-// inherits is cleared of them first: it never takes another plugin's for its own.
-export const PLUGIN_VARIABLES = ['CODA_NODE', 'CODA_ARBITER', 'CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_EXTENSIONS',
-  'CODA_PLUGIN_DEPENDENCIES'];
+// inherits is cleared of them first, those it is given only sometimes too (its secrets' files, the model services, the PATH
+// without Coda's directories): it never takes another plugin's for its own.
+export const PLUGIN_VARIABLES = ['CODA_NODE', 'CODA_ARBITER', 'CODA_PLUGIN_PATH', 'CODA_PLUGIN_STATE', 'CODA_PLUGIN_SETTINGS', 'CODA_PLUGIN_SECRETS',
+  'CODA_PLUGIN_EXTENSIONS', 'CODA_PLUGIN_DEPENDENCIES', 'CODA_MODEL_PROVIDERS', 'CODA_USER_PATH'];
 export const pluginEnv = ({ pluginDir, stateDir, settings = {}, dependencies = {} }) => ({ CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir,
   CODA_PLUGIN_STATE: stateDir, CODA_PLUGIN_SETTINGS: JSON.stringify(settings),
   ...(Object.keys(dependencies).length ? { CODA_PLUGIN_DEPENDENCIES: JSON.stringify(dependencies) } : {}) });

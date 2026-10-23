@@ -120,7 +120,7 @@ for (const { api, keyed, regression } of cases)
             OPENCODE_CONFIG: join(root, 'custom.jsonc'), OPENCODE_CONFIG_DIR: join(root, 'custom-dir'),
           } : {}),
           CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'),
-          CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProvider': 'fixture/service' }),
+          CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProviders': ['fixture/service'] }),
           CODA_MODEL_PROVIDERS: JSON.stringify({ 'fixture/service': { api, title: 'Service fixture', url: api === 'anthropic-messages' ? url : `${url}/v1`, ...(keyed ? { keyFile: join(root, 'key') } : {}) } }) },
         onMessage: m => updates.push(m) });
       agents.push(agent);
@@ -139,6 +139,11 @@ for (const { api, keyed, regression } of cases)
     const models = modelOption ? flatten(modelOption.options) : session.models?.availableModels.map(model => model.modelId);
     assert.ok(models?.includes(id), JSON.stringify(session));
     assert.ok(models.includes('fixture/native'));
+    // Grouped by provider: the service's under its title, each model named alone.
+    if (modelOption) {
+      const group = modelOption.options.find(option => option.options?.some(choice => choice.value === id));
+      assert.deepEqual([group?.name, group?.options.find(choice => choice.value === id)?.name], ['Service fixture', id.slice(id.indexOf('/') + 1)]);
+    }
     if (regression === 'provider-template') {
       assert.ok(models.includes('fixture/from-file'));
       assert.ok(models.includes('fixture/from-dir'));
