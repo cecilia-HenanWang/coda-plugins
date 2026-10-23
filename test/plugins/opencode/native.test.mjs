@@ -3,7 +3,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,8 +11,6 @@ import { AgentProcess } from '../../../check/process.mjs';
 import { pluginDir } from '../plugin.mjs';
 
 const binary = process.env.OPENCODE_TEST_BINARY;
-// The supported minimum parses inline JSON directly; current OpenCode also interpolates its env/file templates.
-const legacyInline = binary && execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim() === '1.0.151';
 const manifest = JSON.parse(readFileSync(join(pluginDir('opencode'), 'package.json'), 'utf8'));
 
 // Both streaming turns and non-streaming background requests get valid, deterministic answers. No tools are requested.
@@ -59,7 +56,7 @@ const cases = ['openai-completions', 'openai-responses', 'anthropic-messages'].f
 cases.push(...['env', 'file', 'jsonc', 'unquoted', 'provider-template'].map(regression => ({ api: 'openai-completions', keyed: false, regression })));
 for (const { api, keyed, regression } of cases)
   test(`real OpenCode: ${regression ?? api} (${keyed ? 'service key' : 'keyless'}) models, turn, native model switch and process resume`,
-    { skip: !binary || (['unquoted', 'provider-template'].includes(regression) && legacyInline), timeout: 120_000 }, async t => {
+    { skip: !binary, timeout: 120_000 }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'coda-opencode-native-')), agents = [], requests = [];
     t.after(async () => { for (const agent of agents) { await agent.terminate(1000); agent.kill(); } rmSync(root, { recursive: true, force: true }); });
     mkdirSync(join(root, '.opencode/bin'), { recursive: true });
@@ -153,7 +150,7 @@ for (const { api, keyed, regression } of cases)
         ? { sessionId: session.sessionId, configId: modelOption.id, value: modelId } : { sessionId: session.sessionId, modelId });
       const start = client.updates.length;
       assert.equal((await client.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: 'Say hello.' }] })).stopReason, 'end_turn');
-      // 1.0.151 forwards updates on a separate event stream, which may drain just after the prompt reply.
+      // An update may reach the client just after the prompt's reply.
       const answered = () => client.updates.slice(start).some(m => m.params?.update?.content?.text?.includes('Fixture answer'));
       for (let i = 0; i < 100 && !answered(); i++) await delay(10);
       assert.ok(answered(), JSON.stringify(client.updates.slice(start)) + client.agent.stderr);
@@ -179,12 +176,12 @@ for (const { api, keyed, regression } of cases)
     assert.ok(requests.some(r => r.path === '/native/v1/chat/completions' && r.body.model === 'native'));
     if (regression === 'jsonc') {
       const native = requests.find(r => r.path === '/native/v1/chat/completions');
-      assert.equal(native.headers.authorization, legacyInline ? 'Bearer {env:OPENCODE_TEST_USER_KEY}' : 'Bearer user-config-key');
-      assert.equal(native.headers['x-user-file'], legacyInline ? `{file:${privateFile}}` : 'synthetic-file-secret');
+      assert.equal(native.headers.authorization, 'Bearer user-config-key');
+      assert.equal(native.headers['x-user-file'], 'synthetic-file-secret');
     }
     if (regression === 'unquoted') {
-      const native = requests.find(r => r.path === '/native/v1/chat/completions' && r.body.stream);
-      assert.equal(native.body.max_tokens, 1024);
+      const native = requests.find(r => r.path === '/native/v1/chat/completions' && r.body.max_completion_tokens !== undefined);
+      assert.equal(native?.body.max_completion_tokens, 1024);
     }
     if (regression === 'provider-template') {
       const native = requests.find(r => r.path === '/native/v1/chat/completions');
@@ -194,3 +191,79 @@ for (const { api, keyed, regression } of cases)
     }
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'opencode.json'), 'utf8')), nativeConfig);
   });
+
+// OpenCode sits out a Retry-After of an hour for up to 15 minutes, saying so in its ACP (plugins/opencode/agent/retries.mjs):
+// the entry ends the turn with the service's reason. The service stands in by what each turn asks last (`answers`, given
+// how often that was asked before: the wait it asks for in seconds, `subagent` for a call of OpenCode's subagent tool, null
+// for an answer); what OpenCode asks without its tools (the session's title) is answered.
+async function retrying(t, answers) {
+  const root = mkdtempSync(join(tmpdir(), 'coda-opencode-retry-')), turns = [];
+  let agent;
+  t.after(async () => { if (agent) { await agent.terminate(1000); agent.kill(); } rmSync(root, { recursive: true, force: true }); });
+  mkdirSync(join(root, '.opencode/bin'), { recursive: true });
+  symlinkSync(binary, join(root, '.opencode/bin/opencode'));
+  const server = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    const body = raw ? JSON.parse(raw) : {}, messages = body.messages ?? [];
+    const asked = JSON.stringify(messages.filter(m => m.role === 'user').at(-1) ?? '');
+    const turn = body.stream && body.tools?.length ? Object.keys(answers).find(word => asked.includes(word)) : undefined;
+    const said = turn === undefined ? null : answers[turn](turns.filter(t => t === turn).length);
+    if (turn !== undefined) turns.push(turn);
+    if (said === 'subagent') {
+      const call = { index: 0, id: 'call_subagent', type: 'function', function: { name: 'subagent',
+        arguments: JSON.stringify({ agent: 'general', description: 'Probe task', prompt: 'Child, please.' }) } };
+      response.setHeader('content-type', 'text/event-stream');
+      for (const choice of [{ index: 0, delta: { role: 'assistant', tool_calls: [call] }, finish_reason: null }, { index: 0, delta: {}, finish_reason: 'tool_calls' }])
+        response.write(`data: ${JSON.stringify({ id: 'chat_subagent', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [choice] })}\n\n`);
+      response.end('data: [DONE]\n\n'); return;
+    }
+    if (said === null) { answer(response, request.url, body); return; }
+    response.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(said) });
+    response.end(JSON.stringify({ error: { message: '用量窗口已满，明天 17:42 重置', type: 'rate_limit_error', code: null } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  writeFileSync(join(root, 'opencode.json'), JSON.stringify({ $schema: 'https://opencode.ai/config.json', model: 'fixture/native', small_model: 'fixture/native', autoupdate: false,
+    provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'fixture-key' },
+      models: { native: { name: 'Native fixture', limit: { context: 32768, output: 4096 }, tool_call: true } } } } }));
+  agent = new AgentProcess({ command: manifest.contributes.agents[0].command, cwd: root,
+    env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'),
+      XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'), OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true', OPENCODE_DISABLE_MODELS_FETCH: 'true',
+      CODA_NODE: process.execPath, CODA_PLUGIN_PATH: pluginDir('opencode'), CODA_PLUGIN_SETTINGS: '{}' } });
+  const request = (method, params) => agent.request(method, params, { timeout: 45_000 });
+  assert.equal((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).error, undefined);
+  const { sessionId } = (await request('session/new', { cwd: root, mcpServers: [] })).result;
+  const prompt = async text => {
+    const started = Date.now(), reply = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+    return { ...reply, took: Date.now() - started, stderr: agent.stderr };
+  };
+  return { prompt, turns };
+}
+const STOPPED = '用量窗口已满，明天 17:42 重置\n\nOpenCode 要等约 15 分钟才会重试，这一轮先结束。';
+
+test('real OpenCode: a model service\'s wait past a minute ends the turn with its reason; a shorter one OpenCode sits out',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const { prompt, turns } = await retrying(t, { Window: () => 3600, Moment: asked => asked ? null : 1 });
+  const long = await prompt('Window, please.');
+  assert.ok(long.took < 30_000, `${long.took} ms`);
+  assert.equal(long.result, undefined, JSON.stringify(long.result) + long.stderr);
+  assert.equal(long.error.message, STOPPED);
+  const short = await prompt('Moment, please.');
+  assert.equal(short.result?.stopReason, 'end_turn', JSON.stringify(short));
+  // Stopped, the long wait is not sat out after all: the service is asked once for it.
+  assert.deepEqual(turns, ['Window', 'Moment', 'Moment']);
+});
+
+// A subagent's wait is the turn's that waits on it: it ends too, and the subagent with it.
+test('real OpenCode: a subagent\'s wait past a minute ends the turn that runs its task',
+  { skip: !binary, timeout: 120_000 }, async t => {
+  const { prompt, turns } = await retrying(t, { Delegate: asked => asked ? null : 'subagent', Child: () => 3600, Moment: () => null });
+  const long = await prompt('Delegate, please.');
+  assert.ok(long.took < 30_000, `${long.took} ms`);
+  assert.equal(long.result, undefined, JSON.stringify(long.result) + long.stderr);
+  assert.equal(long.error.message, STOPPED);
+  const next = await prompt('Moment, please.');
+  assert.equal(next.result?.stopReason, 'end_turn', JSON.stringify(next));
+  assert.deepEqual(turns, ['Delegate', 'Child', 'Moment']);
+});

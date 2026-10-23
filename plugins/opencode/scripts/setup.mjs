@@ -1,17 +1,17 @@
 // The plugin's setup (`contributes.setup`), which Coda runs on each machine when the user installs or updates the plugin: it
-// ends well once the machine can run the agent. Without an OpenCode CLI that runs, or with one older than MINIMUM, OpenCode's own installer (https://opencode.ai/install) puts the latest in
-// ~/.opencode/bin, where the agent looks first, leaving the shell's configuration alone; a newer one is kept. Why the
-// machine is not ready is said in one line on standard error.
+// ends well once the machine can run the agent. Without an OpenCode CLI that runs, or with one older than MINIMUM, OpenCode's
+// own installer (https://opencode.ai/v2/install, OpenCode 2's) puts the latest in ~/.opencode/bin, where the agent looks
+// first, over an OpenCode 1 there, leaving the shell's configuration alone; a newer one is kept. Why the machine is not
+// ready is said in one line on standard error.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { opencodeBinary } from '../agent/binary.mjs';
 
-// The first release whose `opencode acp` keeps Coda's contract: it reports the current model on `session/new` and
-// `session/load`, and a session it loads in a new process goes on. `opencode acp` came in 0.15.10, but until 0.15.13 it
-// reports no model, so Coda refuses every turn; until 0.15.16 it cannot load a session; and until 1.0.150 its load answers
-// without keeping the session (sst/opencode#5385), so the next prompt is "Session not found".
-export const MINIMUM = '1.0.151';
+// The release the entry was checked against: OpenCode 2, whose ACP says a model service's wait (retries.mjs), as OpenCode 1
+// never does, sitting out a Retry-After of any length in silence. It reports the current model, loads a session in a new
+// process, and takes over OpenCode 1's sessions, under their IDs.
+export const MINIMUM = '2.1.4';
 // The first x.y.z a version command prints; whether one is older than another.
 export const versionIn = text => /(\d+)\.(\d+)\.(\d+)/.exec(text ?? '')?.slice(1).join('.') ?? null;
 export function older(version, than) {
@@ -36,7 +36,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   const before = needed(opencodeBinary());
   if (before.action !== 'none') {
     // What the installer prints goes to standard error with the rest of its story.
-    const installed = spawnSync('bash', ['-c', 'set -o pipefail; curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'], { stdio: ['ignore', 2, 2] });
+    const installed = spawnSync('bash', ['-c', 'set -o pipefail; curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path'], { stdio: ['ignore', 2, 2] });
     if (installed.status !== 0) { console.error(`${before.reason}，安装失败（退出码 ${installed.status ?? installed.signal}）`); process.exit(1); }
   }
   const after = needed(opencodeBinary());
