@@ -3,8 +3,20 @@
   "id": "magpie",
   "displayName": "Magpie",
   "description": "Magpie：把这台机器上的 Magpie 网关（127.0.0.1:3425）作为模型服务提供给 Pi 等插件选用，不用填地址和 Key；安装时没有 Magpie 就装上，并让网关常驻。",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "contributes": {
+    "configuration": {
+      "title": "Magpie",
+      "properties": {
+        "magpie.accountDiscovery": {
+          "title": "读取 Agent 自己的登录",
+          "type": "boolean",
+          "order": 1,
+          "default": true,
+          "description": "打开时 Magpie 读取 Codex、Claude Code 等 Agent 自己的登录（如 ~/.codex/auth.json 与钥匙串），把它们的订阅作为模型提供；关掉后一个都不读，只用在 Magpie 里以 API Key 添加的服务，它存下的登录副本留着，再打开就回来。同 Magpie 的「设置 › 隐私 › Subscription accounts」，以这里为准。"
+        }
+      }
+    },
     "modelProviders": [
       {
         "id": "openai",
