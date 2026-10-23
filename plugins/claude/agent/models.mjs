@@ -29,13 +29,26 @@ export function reportedModel(models, current, model) {
 
 const select = (id, name, category, currentValue, choices) => ({ id, name, category, type: 'select', currentValue,
   options: choices.map(c => ({ value: c.id, name: c.name, ...(c._meta ? { _meta: c._meta } : {}) })) });
+// The models, grouped by where they come from once a model service's are among them (ACP's select groups, Coda's
+// docs/agent-protocol.md「模型的分组」): Claude's own, then each service's, under its title. Claude's alone are one plain list.
+function modelSelect(currentValue, models) {
+  if (!models.some(model => model.service)) return select('model', '模型', 'model', currentValue, models);
+  const groups = [{ group: 'claude', name: 'Claude', options: [] }];
+  for (const model of models) {
+    const id = model.service ?? 'claude';
+    let group = groups.find(g => g.group === id);
+    if (!group) groups.push(group = { group: id, name: model.group || id, options: [] });
+    group.options.push({ value: model.id, name: model.name });
+  }
+  return { id: 'model', name: '模型', category: 'model', type: 'select', currentValue, options: groups.filter(g => g.options.length) };
+}
 // The effort that leaves it to the model, marked as the agent's own default (docs/agent-protocol.md): what Coda goes back to
 // when the session's effort is taken off.
 export const MODEL_EFFORT = 'default';
 // `current`: { mode, model, effort }. An effort not chosen is null: the model's own default.
 export function configOptions(models, current) {
   const efforts = models.find(m => m.id === current.model)?.efforts ?? [];
-  return [select('mode', '审批模式', 'mode', current.mode, MODES), select('model', '模型', 'model', current.model, models),
+  return [select('mode', '审批模式', 'mode', current.mode, MODES), modelSelect(current.model, models),
     ...(efforts.length ? [select('effort', '推理强度', 'thought_level', efforts.includes(current.effort) ? current.effort : MODEL_EFFORT,
       [{ id: MODEL_EFFORT, name: '模型默认', _meta: { coda: { default: true } } }, ...efforts.map(id => ({ id, name: id }))])] : [])];
 }

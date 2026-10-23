@@ -1,54 +1,72 @@
-// The model service chosen in Coda (`codex.modelProvider`, Coda's docs/plugins.md「模型服务」): another plugin's service that
-// speaks the OpenAI Responses API (Codex no longer speaks Chat Completions), from CODA_MODEL_PROVIDERS. The models its address
-// lists (`<地址>/models`) join Codex's own, each named by the service and the model. Codex binds a thread to one model
-// provider, so a turn on another provider's model first moves the session there the way codex-acp moves it for ACP's
-// `providers/set` and `providers/disable`: its app-server starts again with the service as the provider of its OpenAI slot
-// (or without it), and the session's thread is resumed on it. The machine's Codex configuration is not touched.
+// The model services chosen in Coda (`codex.modelProviders`, Coda's docs/plugins.md「模型服务」): other plugins' services
+// that speak the OpenAI Responses API (Codex no longer speaks Chat Completions), from CODA_MODEL_PROVIDERS. The models each
+// lists (`<地址>/models`) join Codex's own, a group of the service's each (Coda's docs/agent-protocol.md「模型的分组」). Codex
+// binds a thread to one model provider, so a turn on another provider's model first moves the session there the way
+// codex-acp moves it for ACP's `providers/set` and `providers/disable`: its app-server starts again with that service as the
+// provider of its OpenAI slot (or without one), and the session's thread is resumed on it. The machine's Codex
+// configuration is not touched.
 import { existsSync, readFileSync } from 'node:fs';
 import { carriedInstructions } from './instructions.mjs';
 
-export const SETTING = 'codex.modelProvider';
+export const SETTING = 'codex.modelProviders';
 const log = text => process.stderr.write(`[codex-agent] ${text}\n`);
 const parse = text => { try { return JSON.parse(text || '{}'); } catch { return {}; } };
 const LIST_TIMEOUT = 8000;
 
-// The chosen service: its address, title and key (read from the file Coda keeps it in). Null when none is chosen, or the
-// one chosen is not on this machine or speaks another API.
-export function chosenService(env = process.env) {
-  const ref = parse(env.CODA_PLUGIN_SETTINGS)[SETTING];
-  if (!ref) return null;
-  const provided = parse(env.CODA_MODEL_PROVIDERS)[ref];
-  if (!provided?.url) { log(`模型服务 ${ref} 在这台机器上没有`); return null; }
-  if (provided.api !== 'openai-responses') { log(`模型服务 ${ref} 讲 ${provided.api}，Codex 只接 openai-responses 的`); return null; }
-  let key;
-  try { key = provided.keyFile ? readFileSync(provided.keyFile, 'utf8').trim() || undefined : undefined; }
-  catch (e) { log(`读不到模型服务 ${ref} 的 Key：${e.message}`); }
-  return { ref, title: provided.title || ref, url: provided.url, key };
+// The services chosen, in the order chosen: each its address, title and key (read from the file Coda keeps it in). One not
+// on this machine, or speaking another API, is left out.
+export function chosenServices(env = process.env) {
+  const refs = parse(env.CODA_PLUGIN_SETTINGS)[SETTING], provided = parse(env.CODA_MODEL_PROVIDERS);
+  return (Array.isArray(refs) ? refs : []).flatMap(ref => {
+    const service = provided[ref];
+    if (!service?.url) { log(`模型服务 ${ref} 在这台机器上没有`); return []; }
+    if (service.api !== 'openai-responses') { log(`模型服务 ${ref} 讲 ${service.api}，Codex 只接 openai-responses 的`); return []; }
+    let key;
+    try { key = service.keyFile ? readFileSync(service.keyFile, 'utf8').trim() || undefined : undefined; }
+    catch (e) { log(`读不到模型服务 ${ref} 的 Key：${e.message}`); }
+    return [{ ref, title: service.title || ref, url: service.url, key }];
+  });
 }
 
-// The models the service lists, as Codex's model list has them (app-server `model/list`): `<服务>/<模型>`, named by the
-// model and the service, with no effort or speed to choose.
+// The models a service lists, as Codex's model list has them (app-server `model/list`): `<服务>/<模型>`, named by the
+// model, with no effort or speed to choose; `codaService` and `codaGroup` say whose they are, for the session's move and
+// the model's group.
 export async function serviceModels({ ref, title, url, key }, fetcher = fetch) {
   const at = `${url.replace(/\/+$/, '')}/models`;
   const response = await fetcher(at, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(LIST_TIMEOUT) });
   if (!response.ok) throw new Error(`${at} 回答 ${response.status}`);
   const body = await response.json();
   return (Array.isArray(body?.data) ? body.data : []).filter(model => typeof model?.id === 'string' && model.id).map(model => ({
-    id: `${ref}/${model.id}`, model: model.id, displayName: `${model.id} (${title})`, description: '', hidden: false, isDefault: false,
-    supportedReasoningEfforts: [], defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], serviceTiers: [] }));
+    id: `${ref}/${model.id}`, model: model.id, displayName: model.id, description: '', hidden: false, isDefault: false,
+    supportedReasoningEfforts: [], defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], serviceTiers: [],
+    codaService: ref, codaGroup: title }));
 }
 
-// One service a process (Coda runs one session a process), listed once, as its session opens.
+// The services a process has (Coda runs one session a process), listed once, as its session opens.
 export class ServiceModels {
-  // `on`: the service's address the session runs on, null on Codex's own (where it opens), undefined when a move to one or
-  // the other failed partway: codex-acp sets its gateway before the thread is resumed on it, so that is no sign of either,
-  // and keeps its old client, closed, when the app-server it started again does not start.
-  constructor(service = chosenService(), fetcher = fetch) { Object.assign(this, { service, fetcher }); this.models = []; this.on = null; }
+  // `on`: the service the session runs on, null on Codex's own (where it opens), undefined when a move to one or another
+  // failed partway: codex-acp sets its gateway before the thread is resumed on it, so that is no sign of either, and keeps
+  // its old client, closed, when the app-server it started again does not start.
+  constructor(services = chosenServices(), fetcher = fetch) { Object.assign(this, { services, fetcher }); this.models = []; this.on = null; }
+  // Theirs in the order the services are chosen: none of one that cannot list them now.
   list() {
-    return this.listed ??= (!this.service ? Promise.resolve([]) : serviceModels(this.service, this.fetcher)
-      .catch(e => { log(`模型服务 ${this.service.ref} 列不出模型：${e.message}`); return []; })).then(models => (this.models = models));
+    return this.listed ??= Promise.all(this.services.map(service => serviceModels(service, this.fetcher)
+      .catch(e => { log(`模型服务 ${service.ref} 列不出模型：${e.message}`); return []; }))).then(lists => (this.models = lists.flat()));
   }
   served(model) { return this.models.find(m => m.id === model) ?? null; }
+  // The model select's options (codex-acp's, of Codex's models and the services'), grouped by where they come from once a
+  // service's are among them: Codex's own, then each service's under its title. Codex's alone are one plain list.
+  grouped(options) {
+    if (!options.some(option => this.served(option.value))) return options;
+    const groups = [{ group: 'codex', name: 'Codex', options: [] }];
+    for (const option of options) {
+      const served = this.served(option.value), id = served?.codaService ?? 'codex';
+      let group = groups.find(g => g.group === id);
+      if (!group) groups.push(group = { group: id, name: served.codaGroup, options: [] });
+      group.options.push(option);
+    }
+    return groups.filter(g => g.options.length);
+  }
   // What a turn names to Codex: the service's own name for one of its models.
   wire(model) { return this.served(model)?.model ?? model; }
   // A stop that comes while a turn waits on the move has no turn of codex-acp's to interrupt yet: it is the waiting turn's,
@@ -66,7 +84,8 @@ export class ServiceModels {
   async move(server, { sessionId, prompt }) {
     const state = server.sessions.get(sessionId);
     if (!state) return;
-    const served = this.served(state.currentModelId.replace(/\[[^\]]*\]$/, '')), wanted = served ? this.service.url : null;
+    const served = this.served(state.currentModelId.replace(/\[[^\]]*\]$/, ''));
+    const service = served ? this.services.find(s => s.ref === served.codaService) : null, wanted = service?.ref ?? null;
     if (this.on === wanted) return;
     if (this.on !== undefined) {
       const client = server.codexAcpClient.appServerClient;
@@ -74,8 +93,8 @@ export class ServiceModels {
       if (thread.path && !existsSync(thread.path)) await client.threadSetName({ threadId: sessionId, name: firstWords(prompt) });
     }
     this.on = undefined;
-    await carriedInstructions(() => served ? server.setProvider({ providerId: 'openai', apiType: 'openai', baseUrl: this.service.url,
-      headers: this.service.key ? { Authorization: `Bearer ${this.service.key}` } : {} }) : server.disableProvider({ providerId: 'openai' }));
+    await carriedInstructions(() => service ? server.setProvider({ providerId: 'openai', apiType: 'openai', baseUrl: service.url,
+      headers: service.key ? { Authorization: `Bearer ${service.key}` } : {} }) : server.disableProvider({ providerId: 'openai' }));
     this.on = wanted;
   }
   // Codex knows nothing of the service's models: that it runs one on fallback metadata, or resumes a session last on one
@@ -89,8 +108,10 @@ const firstWords = prompt => Array.from((prompt ?? []).filter(b => b.type === 't
 
 export const services = new ServiceModels();
 const patches = [
-  // Codex's models, then the service's.
+  // Codex's models, then the services'.
   ['    } while (cursor);\n    return models;\n  }', '    } while (cursor);\n    return [...models, ...await codaServices.list()];\n  }', 1],
+  // Listed in groups once a service's are among them.
+  ['    currentValue: currentBaseModelId,\n    options,\n', '    currentValue: currentBaseModelId,\n    options: codaServices.grouped(options),\n', 1],
   // A turn first moves the session to the provider of its model, and names the model as that provider does.
   ['  async prompt(params, signal, onTurnStarted) {\n    if (this.providerUpdate !== null) {',
     '  async prompt(params, signal, onTurnStarted) {\n    if (await codaServices.route(this, params)) return { stopReason: "cancelled" };\n    if (this.providerUpdate !== null) {', 1],

@@ -3,24 +3,27 @@ import { test } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chosenService, providerEnvironment, providerId, serviceModels, serviceProvider } from '../../../plugins/opencode/agent/providers.mjs';
+import { chosenServices, providerEnvironment, providerId, serviceModels, serviceProvider } from '../../../plugins/opencode/agent/providers.mjs';
 
 const service = { ref: 'magpie/openai', title: 'Magpie', api: 'openai-completions', url: 'https://example.com/v1' };
-const provided = (extra = {}) => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProvider': service.ref }),
-  CODA_MODEL_PROVIDERS: JSON.stringify({ [service.ref]: { ...service, ...extra } }) });
+const provided = (extra = {}, others = {}) => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProviders': [service.ref, ...Object.keys(others)] }),
+  CODA_MODEL_PROVIDERS: JSON.stringify({ [service.ref]: { ...service, ...extra }, ...others }) });
 
-test('the chosen service supports all three APIs and reads only its own key file; missing services and keys add nothing', t => {
+test('the chosen services support all three APIs, in the order chosen, each reading only its own key file; missing services and keys add nothing', t => {
   const dir = mkdtempSync(join(tmpdir(), 'coda-opencode-provider-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  assert.equal(chosenService({}), null);
-  assert.equal(chosenService({ CODA_PLUGIN_SETTINGS: 'null' }), null);
-  assert.equal(chosenService({ ...provided(), CODA_MODEL_PROVIDERS: '{}' }), null);
-  assert.equal(chosenService(provided({ api: 'unsupported' })), null);
-  assert.equal(chosenService(provided({ keyFile: join(dir, 'missing') })), null);
+  assert.deepEqual(chosenServices({}), []);
+  assert.deepEqual(chosenServices({ CODA_PLUGIN_SETTINGS: 'null' }), []);
+  assert.deepEqual(chosenServices({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'opencode.modelProviders': service.ref }) }), [], 'one written before it was several is none');
+  assert.deepEqual(chosenServices({ ...provided(), CODA_MODEL_PROVIDERS: '{}' }), []);
+  assert.deepEqual(chosenServices(provided({ api: 'unsupported' })), []);
+  assert.deepEqual(chosenServices(provided({ keyFile: join(dir, 'missing') })), []);
   const keyFile = join(dir, 'key');
   writeFileSync(keyFile, 'sk-service\n');
   for (const api of ['openai-completions', 'openai-responses', 'anthropic-messages'])
-    assert.deepEqual(chosenService(provided({ api, keyFile })), { ...service, api, key: 'sk-service' });
+    assert.deepEqual(chosenServices(provided({ api, keyFile })), [{ ...service, api, key: 'sk-service' }]);
+  const other = { title: 'rig · Proxy', api: 'anthropic-messages', url: 'https://proxy.example.com' };
+  assert.deepEqual(chosenServices(provided({}, { 'space/s-proxy': other })).map(s => s.ref), ['magpie/openai', 'space/s-proxy']);
 });
 
 test('model discovery uses the selected API authentication, preserves slashes, deduplicates and follows Anthropic pages', async () => {
@@ -75,7 +78,17 @@ test('only the child inline config changes: native providers, default model and 
   assert.equal(await providerEnvironment(noSelection, () => assert.fail('no discovery without a selection')), noSelection);
   await assert.rejects(providerEnvironment({ ...env, OPENCODE_CONFIG_CONTENT: '{broken' }, async () => Response.json({ data: [{ id: 'm' }] })), SyntaxError);
   const manifest = JSON.parse(readFileSync(new URL('../../../plugins/opencode/package.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.contributes.configuration.properties['opencode.modelProvider'].format, 'coda-model-provider');
+  assert.equal(manifest.contributes.configuration.properties['opencode.modelProviders'].items.format, 'coda-model-provider');
+});
+
+test('several services chosen are a native provider each; one that cannot list its models now is left out, the others not', async () => {
+  const other = { title: 'rig · Proxy', api: 'anthropic-messages', url: 'https://proxy.example.com' };
+  const result = await providerEnvironment(provided({}, { 'space/s-proxy': other, 'space/s-down': { ...other, url: 'https://down.example.com' } }),
+    async url => url.startsWith('https://down') ? new Response('', { status: 503 }) : Response.json({ data: [{ id: url.includes('proxy') ? 'p/model' : 'm/model' }] }));
+  const providers = JSON.parse(result.OPENCODE_CONFIG_CONTENT).provider;
+  assert.deepEqual(Object.keys(providers), ['coda-magpie.openai', 'coda-space.s-proxy']);
+  assert.deepEqual([providers['coda-magpie.openai'].name, Object.keys(providers['coda-magpie.openai'].models)], ['Magpie', ['m/model']]);
+  assert.deepEqual([providers['coda-space.s-proxy'].name, Object.keys(providers['coda-space.s-proxy'].models)], ['rig · Proxy', ['p/model']]);
 });
 
 test('service data stays literal through OpenCode interpolation, including model keys, names, quotes and backslashes', async () => {

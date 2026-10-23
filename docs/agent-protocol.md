@@ -1,9 +1,9 @@
 <!--
   副本：由 scripts/sync-protocol.mjs 从 Coda 主仓库的 docs/agent-protocol.md 同步，不要直接改；改协议先改 Coda 的正文，再同步。
-  coda-commit: 52831f0e2a09b16187f254ad2d19e270723bdc3b
+  coda-commit: a52459b1f950957923a6e187075ba981263279f4
   acp-protocol-version: 1
   acp-sdk: 1.4.0
-  body-sha256: 51fd9d04a991c6fde0722f7483e9a49796d01a5cbc7966e0e686bf50522afe02
+  body-sha256: 37e84e31342136728ed205443144e927b58343c5c36c7ff6262652bc76d2e37d
 -->
 # Agent 接入协议
 
@@ -27,7 +27,7 @@ Coda 是 ACP 的客户端。每个会话的 Agent 进程由一个会话托管进
 | --- | --- | --- |
 | `initialize` | Coda → Agent | 握手。`clientCapabilities` 带 `elicitation.form`、`elicitation.url`、`session.compaction`、`session.configOptions.boolean` 与 `_meta.coda.waits`（见[能力协商](#能力协商)） |
 | `session/new`、`session/load` | Coda → Agent | 新建或恢复原生会话，会话 ID 由 Agent 给；Agent 声明 `loadSession` 才会被要求恢复。带 `systemPrompt`（[会话指令](#会话指令)）。结果里要报出当前模型（见下）。恢复期间重放的历史 Coda 不收（它有自己的），只收命令与标题 |
-| `session/prompt` | Coda → Agent | 一轮：Coda 送出用户的消息或它自己合成的输入（子任务结果等），Agent 回复 `stopReason` 即本轮结束 |
+| `session/prompt` | Coda → Agent | 一轮：Coda 送出用户的消息或它自己合成的输入（子会话结果等），Agent 回复 `stopReason` 即本轮结束 |
 | `_session/steering` | Coda → Agent | [插话](#插话)：把用户的消息加进正在进行的一轮；只对声明支持的 Agent 发 |
 | `session/cancel` | Coda → Agent | 停止：本轮在进行时取消本轮；Agent 在一轮之外处理活动（`handling`）时，停止处理 |
 | `session/set_config_option`、`session/set_mode`、`session/set_model` | Coda → Agent | 模型、推理强度与模式 |
@@ -42,6 +42,9 @@ ACP 只允许在一轮（`session/prompt`）进行时交互。Agent 在两轮之
 - **表单**：`requestedSchema` 是标准 JSON Schema，Coda 按它展示并校验回答；单选、多选用
   `enum` 或 `oneOf`/`anyOf` 的 `{const, title}`，不认私有键。
 - **链接**（`mode: url`）：带 `url` 与 `elicitationId`，没有要填的字段；Coda 展示链接，用户打开、办完后确认，回 `{action}`（`accept`、`decline` 或 `cancel`）。
+- **模型的分组**：`category: model` 的配置项可以按来源分组，用 ACP 选择型配置项的分组写法：`options` 是一组 `{ group, name, options }`，
+  如 Agent 自己的模型一组、它接的每个模型服务一组（模型服务）。Coda 记下每个模型所在组的 `name`，两端选模型时按组分段、
+  以组名为段标题，组内与输入框上只写模型的 `name`；不分组的照旧列成一串。模型 ID 在各组之间不重复，设模型照旧按 ID。
 - **当前模型**：`session/new`、`session/load` 的结果要报出会话当前用的模型：配置项里 `category: model` 那一项的 `currentValue`，或 `models.currentModelId`；
   之后 `config_option_update` 与 `session/set_config_option`、`session/set_model` 的结果改了它，以改后的为准。Coda 每轮开始前把会话设置设给 Agent，
   再读当前模型记作这一轮的实际模型；读不到就拒绝这一轮（「适配器未报告实际模型」），不发 `session/prompt`。
@@ -134,7 +137,7 @@ Coda 按该类别显示「额度不足」，保留完整原因，不安排自动
 输入是否被接收或执行是否已结束无法确定时，不带此标记。错误文字始终放在标准 `error.message`；其他 ACP 客户端可以忽略扩展。
 Agent 自己仍在重连或重试时，不得提前返回本次 `session/prompt` 的失败；Coda 只在失败回执后安排重试。
 
-Coda 统一按 15、30、60 秒退避，每次执行最多重试三次，沿用原生会话、执行设置、原输入与任务轮次身份，
+Coda 统一按 15、30、60 秒退避，每次执行最多重试三次，沿用原生会话、执行设置、原输入与轮次身份，
 每次 ACP 请求使用新 ID。等待中保持执行状态，可随时停止；斜杠命令不自动重试。次数耗尽或遇到未标记错误时结束并保留最后原因。
 退避只在当前执行期间保留，后端重启或连接中断即结束等待；已发出的请求、整机中断沿用现有会话接管和恢复规则。
 
@@ -235,7 +238,7 @@ Coda 发给 Agent 的请求，参数 `{ "sessionId": …, "waitId": … }`，Age
 ## 内置 Agent 的入口进程
 
 Coda 自带的 Agent 都是内置插件（清单见插件：Agent），照本协议接入。源码与入口自己的测试在公开仓库
-coda-console/coda-plugins 的 `plugins/<插件>/`、`test/plugins/<插件>/`，Coda 里的 `backend/src/resources/plugins/<插件>/` 是钉住提交的只读副本
+coda-console/coda-plugins 的 `plugins/<插件>/`、`test/plugins/<插件>/`，发布为 npm 包 `@coda-console/<插件>`，Coda 以钉住版本的依赖装在 `backend/node_modules/` 里
 （开发与验证：coda-plugins 维护的内置插件）。各家要做的特殊处理在它自己的入口进程里（插件的 `agent/`），
 入口只用插件目录里的代码、它 `package.json` 声明的 npm 依赖与 Node 自带的模块，不引用 Coda 后端的模块。怎么启动写在清单的 `command` 里：
 插件自带的入口由 Coda 的 Node（`CODA_NODE`）从运行时副本里的插件目录运行，其余是运行机上的命令。

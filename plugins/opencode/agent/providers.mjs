@@ -1,24 +1,28 @@
-// Coda's chosen model service becomes a separate native OpenCode provider, through the child process's inline config.
-// OpenCode lists, selects and resumes its models itself; the machine's own providers and config files stay as they are.
+// The model services chosen in Coda (`opencode.modelProviders`) become native OpenCode providers, a separate one each, through
+// the child process's inline config. OpenCode lists, selects and resumes their models itself; the machine's own providers and
+// config files stay as they are.
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { parseTree } from 'jsonc-parser';
 
-export const SETTING = 'opencode.modelProvider';
+export const SETTING = 'opencode.modelProviders';
 const packages = { 'openai-completions': '@ai-sdk/openai-compatible', 'openai-responses': '@ai-sdk/openai', 'anthropic-messages': '@ai-sdk/anthropic' };
 const log = text => process.stderr.write(`[opencode-agent] ${text}\n`);
 const parse = text => { try { return JSON.parse(text || '{}'); } catch { return {}; } };
 
-export function chosenService(env = process.env) {
-  const ref = parse(env.CODA_PLUGIN_SETTINGS)?.[SETTING];
-  if (!ref) return null;
-  const service = parse(env.CODA_MODEL_PROVIDERS)?.[ref];
-  if (!service?.url) { log(`模型服务 ${ref} 在这台机器上没有`); return null; }
-  if (!Object.hasOwn(packages, service.api)) { log(`模型服务 ${ref} 的接口 ${service.api} 不受 OpenCode 插件支持`); return null; }
-  let key;
-  try { key = service.keyFile ? readFileSync(service.keyFile, 'utf8').trim() || undefined : undefined; }
-  catch { log(`读不到模型服务 ${ref} 的 Key`); return null; }
-  return { ref, title: service.title || ref, api: service.api, url: service.url, key };
+// The services chosen, in the order chosen. One not on this machine, speaking an API OpenCode is not given, or whose key
+// cannot be read is left out.
+export function chosenServices(env = process.env) {
+  const refs = parse(env.CODA_PLUGIN_SETTINGS)?.[SETTING], provided = parse(env.CODA_MODEL_PROVIDERS);
+  return (Array.isArray(refs) ? refs : []).flatMap(ref => {
+    const service = provided?.[ref];
+    if (!service?.url) { log(`模型服务 ${ref} 在这台机器上没有`); return []; }
+    if (!Object.hasOwn(packages, service.api)) { log(`模型服务 ${ref} 的接口 ${service.api} 不受 OpenCode 插件支持`); return []; }
+    let key;
+    try { key = service.keyFile ? readFileSync(service.keyFile, 'utf8').trim() || undefined : undefined; }
+    catch { log(`读不到模型服务 ${ref} 的 Key`); return []; }
+    return [{ ref, title: service.title || ref, api: service.api, url: service.url, key }];
+  });
 }
 
 // Provider IDs cannot contain '/', which OpenCode uses to split a provider from a model. Coda refs have two components
@@ -99,14 +103,15 @@ function inlineProvider(text, id, provider, env) {
   return { [name]: value, OPENCODE_CONFIG_CONTENT: config.set('provider', `{env:${name}}`) };
 }
 
-export async function providerEnvironment(env = process.env, fetcher = fetch) {
-  const service = chosenService(env);
-  if (!service) return env;
-  let models;
-  try { models = await serviceModels(service, fetcher); }
-  catch (error) { log(`模型服务 ${service.ref} 列不出模型：${error.message}`); return env; }
-  if (!models.length) return env;
+// The chosen services' providers by ID, each named by its service's title (groups.mjs).
+export const serviceNames = services => Object.fromEntries(services.map(service => [providerId(service.ref), service.title]));
+
+export async function providerEnvironment(env = process.env, fetcher = fetch, services = chosenServices(env)) {
+  const listed = await Promise.all(services.map(async service => {
+    try { return [service, await serviceModels(service, fetcher)]; }
+    catch (error) { log(`模型服务 ${service.ref} 列不出模型：${error.message}`); return [service, []]; }
+  }));
   // Invalid user configuration still fails clearly, without echoing config contents (which may include credentials).
-  return { ...env, ...inlineProvider(env.OPENCODE_CONFIG_CONTENT || '{}',
-    providerId(service.ref), serviceProvider(service, models), env) };
+  return listed.filter(([, models]) => models.length).reduce((at, [service, models]) => ({ ...at,
+    ...inlineProvider(at.OPENCODE_CONFIG_CONTENT || '{}', providerId(service.ref), serviceProvider(service, models), at) }), env);
 }

@@ -4,38 +4,41 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chosenService, listedModels, serviceModels, serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
+import { chosenServices, listedModels, serviceModels, serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
 
-const provided = services => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': 'magpie/anthropic' }), CODA_MODEL_PROVIDERS: JSON.stringify(services) });
+const provided = (services, chosen = Object.keys(services)) => ({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': chosen }), CODA_MODEL_PROVIDERS: JSON.stringify(services) });
 const magpie = { plugin: 'magpie', title: 'Magpie · Anthropic', api: 'anthropic-messages', url: 'http://127.0.0.1:3425' };
 
-test('the service chosen is the one of this machine that speaks Anthropic Messages, with its key read from its file', async t => {
+test('the services chosen are those of this machine that speak Anthropic Messages, in the order chosen, each key read from its file', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'coda-claude-providers-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  assert.equal(chosenService({}), null, 'none chosen');
-  assert.equal(chosenService({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProvider': '' }) }), null, '「不用」');
-  assert.deepEqual(chosenService(provided({ 'magpie/anthropic': magpie })), { ref: 'magpie/anthropic', title: 'Magpie · Anthropic', url: 'http://127.0.0.1:3425', key: undefined });
+  assert.deepEqual(chosenServices({}), [], 'none chosen');
+  assert.deepEqual(chosenServices({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': [] }) }), [], '「不用」');
+  assert.deepEqual(chosenServices({ CODA_PLUGIN_SETTINGS: JSON.stringify({ 'claude.modelProviders': 'magpie/anthropic' }) }), [], 'one written before it was several is none');
   await writeFile(join(dir, 'key'), 'sk-service\n');
-  assert.equal(chosenService(provided({ 'magpie/anthropic': { ...magpie, keyFile: join(dir, 'key') } })).key, 'sk-service');
-  assert.equal(chosenService(provided({})), null, 'not on this machine');
-  assert.equal(chosenService(provided({ 'magpie/anthropic': { ...magpie, api: 'openai-completions' } })), null, 'another API');
+  const services = { 'magpie/anthropic': magpie, 'space/s-proxy': { ...magpie, title: 'rig · Proxy', url: 'http://127.0.0.1:4000', keyFile: join(dir, 'key') },
+    'magpie/openai': { ...magpie, api: 'openai-completions' } };
+  assert.deepEqual(chosenServices(provided(services, ['space/s-proxy', 'gone/x', 'magpie/openai', 'magpie/anthropic'])), [
+    { ref: 'space/s-proxy', title: 'rig · Proxy', url: 'http://127.0.0.1:4000', key: 'sk-service' },
+    { ref: 'magpie/anthropic', title: 'Magpie · Anthropic', url: 'http://127.0.0.1:3425', key: undefined }], 'one not on this machine, or of another API, is left out');
 });
 
-test('its models are listed as an Anthropic client asks, named by the model and the service', async () => {
+test('its models are listed as an Anthropic client asks, named by the model, in the service\'s group', async () => {
   const asked = [];
   const fetcher = async (url, { headers }) => {
     asked.push([url, headers]);
     return Response.json({ data: [{ id: 'deepseek/deepseek-v4-pro', display_name: 'DeepSeek V4 Pro' }, { id: '' }, { name: 'no id' }], has_more: false });
   };
   const models = await serviceModels({ ref: 'magpie/anthropic', title: 'Magpie · Anthropic', url: 'http://127.0.0.1:3425/' }, fetcher);
-  assert.deepEqual(models, [{ id: 'magpie/anthropic/deepseek/deepseek-v4-pro', name: 'deepseek/deepseek-v4-pro (Magpie · Anthropic)', efforts: [], model: 'deepseek/deepseek-v4-pro' }]);
+  assert.deepEqual(models, [{ id: 'magpie/anthropic/deepseek/deepseek-v4-pro', name: 'deepseek/deepseek-v4-pro', efforts: [], model: 'deepseek/deepseek-v4-pro',
+    service: 'magpie/anthropic', group: 'Magpie · Anthropic' }]);
   await serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com', key: 'sk' }, fetcher);
   assert.deepEqual(asked, [['http://127.0.0.1:3425/models?limit=1000', {}],
     ['https://example.com/models?limit=1000', { 'x-api-key': 'sk', 'anthropic-version': '2023-06-01' }]]);
   await assert.rejects(serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com' }, async () => new Response('', { status: 401 })), /回答 401/);
-  // A service that cannot list now adds none, and the session opens with Claude's own.
-  assert.deepEqual(await listedModels({ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' }), []);
-  assert.deepEqual(await listedModels(null), []);
+  // A service that cannot list now adds none, and the others' still come, and the session opens with Claude's own.
+  assert.deepEqual(await listedModels([{ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' }]), []);
+  assert.deepEqual(await listedModels([]), []);
 });
 
 test('a session on a service\'s model runs Claude Code with the service as its API and that model for every role, none of the machine\'s credentials with it', () => {
