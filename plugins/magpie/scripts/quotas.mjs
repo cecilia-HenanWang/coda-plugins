@@ -1,16 +1,22 @@
 // The panel「Magpie 额度」: what is left of each subscription, plan and balance Magpie serves, as its gateway says
 // (GET /v1/magpie/quotas), a card each — every one Magpie has, those Coda's own panels show too. A window is a bar of what
-// is left, with the vendor's own count where it gives one and when it starts again; a balance and the resets left are a
-// line each; a reading that failed says why. A gateway that does not answer fails the reading, with why on standard error.
+// is left and when it starts again, as the other plugins' panels say it (`剩余 N%`, `7 天`); a balance and the resets left
+// are a line each; a reading that failed says why. A gateway that does not answer fails the reading, with why on standard error.
 import { GATEWAY } from './setup.mjs';
 
 const line = text => String(text).slice(0, 80);
-const fraction = remaining => Math.min(1, Math.max(0, Number(remaining) / 100));
+const WORDS = { Monthly: '月度', Weekly: '7 天', Daily: '1 天' };
+// A window's name as the other panels write one: `5 hours` is `5 小时`, `7 days` `7 天`; one of its own stays as Magpie says it.
+const named = name => {
+  const span = /^(\d+) (hour|day|week|month)s?$/.exec(name);
+  return line(span ? `${span[1]} ${{ hour: '小时', day: '天', week: '周', month: '个月' }[span[2]]}` : WORDS[name] ?? name);
+};
 
 function meter(window) {
-  if (window.unlimited) return { type: 'meter', label: line(window.name), value: '不限' };
-  return { type: 'meter', label: line(window.name), value: line(window.display || `已用 ${Math.round(window.used)}%`),
-    fraction: fraction(window.remaining), ...(window.resetsAt ? { time: window.resetsAt, timeLabel: '重置' } : {}) };
+  if (window.unlimited) return { type: 'meter', label: named(window.name), value: '不限' };
+  const left = Math.round(Math.min(100, Math.max(0, Number(window.remaining))));
+  return { type: 'meter', label: named(window.name), value: `剩余 ${left}%`, fraction: left / 100,
+    ...(window.resetsAt ? { time: window.resetsAt, timeLabel: '重置' } : {}) };
 }
 
 function card(quota) {
