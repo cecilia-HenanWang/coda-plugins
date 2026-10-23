@@ -39,6 +39,12 @@ export function versionOf(binary) {
   return ran.status === 0 ? /(\d+(?:\.\d+)+)/.exec(ran.stdout ?? '')?.[1] ?? `${ran.stdout ?? ''}`.trim().split('\n')[0] : null;
 }
 
+// The PATH the service keeps (magpie daemon install takes the one it is run with): the one Coda gives for programs that are
+// not Coda's, without its own folders (CODA_USER_PATH). Magpie reads every PATH folder to find the agents' CLIs; started at
+// login by launchd, it is not Coda, and opening a folder Coda keeps for itself can hold it there for good, and every
+// request with it. A Coda that gives none, the PATH as it is.
+export const servicePath = (env = process.env) => env.CODA_USER_PATH ?? env.PATH ?? '';
+
 const fail = message => { console.error(message); process.exit(1); };
 
 async function main() {
@@ -58,7 +64,7 @@ async function main() {
     binary = magpieBinary();
     if (!binary || !versionOf(binary)) fail(`${reason}，安装后仍找不到能运行的 magpie`);
   }
-  const daemon = spawnSync(binary, ['daemon', 'install'], { stdio: ['ignore', 2, 2], timeout: 120_000 });
+  const daemon = spawnSync(binary, ['daemon', 'install'], { stdio: ['ignore', 2, 2], timeout: 120_000, env: { ...process.env, PATH: servicePath() } });
   if (daemon.status !== 0) fail(`没能让 Magpie 网关常驻（magpie daemon install 退出码 ${daemon.status ?? daemon.signal}）`);
   for (let i = 0; i < 30 && await answering(address) !== 'gateway'; i++) await delay(1000);
   if (await answering(address) !== 'gateway') fail(`Magpie 网关没有在 http://${address} 应答，见 magpie daemon status`);

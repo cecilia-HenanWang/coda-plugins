@@ -51,6 +51,16 @@ test('without a gateway, the machine\'s magpie is made a service, and setup wait
   assert.equal(readFileSync(log, 'utf8'), 'daemon install\n');
 });
 
+test('the service is given the PATH Coda gives for programs that are not its own, which magpie reading Coda\'s folders at login can hang on', async t => {
+  const home = machine(t), log = join(home, 'magpie.log');
+  const address = await gateway(t, () => existsSync(log));
+  mkdirSync(join(home, '.local/bin'), { recursive: true });
+  writeFileSync(join(home, '.local/bin/magpie'), `#!/bin/sh\n[ "$1" = --version ] && { echo 'magpie 0.1.1320'; exit 0; }\necho "$PATH" >> '${log}'\n`, { mode: 0o755 });
+  const ran = await setup(home, address, { CODA_USER_PATH: `${join(home, 'tools')}:/bin`, PATH: [join(home, 'state/credential-commands'), join(home, 'tools'), '/bin'].join(':') });
+  assert.equal(ran.code, 0, ran.stderr);
+  assert.equal(readFileSync(log, 'utf8').trim(), `${join(home, 'tools')}:/bin`);
+});
+
 test('a MAGPIE_ADDR elsewhere is refused, even with a gateway answering there', async t => {
   const home = machine(t), elsewhere = await gateway(t), address = await gateway(t, () => false);
   const ran = await setup(home, address, { MAGPIE_ADDR: elsewhere });
