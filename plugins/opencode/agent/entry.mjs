@@ -5,8 +5,9 @@ import { spawn } from 'node:child_process';
 import { readLines } from './lines.mjs';
 import { opencodeBinary } from './binary.mjs';
 import { SessionInstructions } from './instructions.mjs';
+import { providerEnvironment } from './providers.mjs';
 
-const cli = spawn(opencodeBinary() ?? 'opencode', ['acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
+const cli = spawn(opencodeBinary() ?? 'opencode', ['acp'], { env: await providerEnvironment(), stdio: ['pipe', 'pipe', 'inherit'] });
 cli.stdin.on('error', () => {});
 const parse = line => { try { const value = JSON.parse(line); return value && typeof value === 'object' && !Array.isArray(value) ? value : null; } catch { return null; } };
 const say = message => process.stdout.write(`${JSON.stringify(message)}\n`), instructions = new SessionInstructions();

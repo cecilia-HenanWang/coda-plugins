@@ -11,7 +11,7 @@ plugins/codex/           Codex：入口在同一进程里运行锁定版本的 c
 plugins/claude/          Claude SDK：基于 Claude Agent SDK 的 ACP 入口（npm 依赖），面板「Claude」
 plugins/kimi/            Kimi Code：在运行机的 kimi acp 与 Coda 之间转发，面板「Kimi」
 plugins/grok/            Grok：转发运行机上 Grok CLI 的 ACP，并适配审批模式，面板「Grok」
-plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令
+plugins/opencode/        OpenCode：在运行机的 opencode acp 与 Coda 之间转发，送入会话指令与所选模型服务
 plugins/codex-accounts/  Codex 多账号：管理登录、自动续期与账号选择，接管 Codex 额度面板
 plugins/cursor/          Cursor：在运行机的 cursor-agent acp 与 Coda 之间转发，送入会话指令
 plugins/magpie/          Magpie：把本机的 Magpie 网关作为模型服务提供给 Pi 等插件，安装时装好 Magpie 并让网关常驻
@@ -62,7 +62,7 @@ docs/agent-protocol.md   Coda 接入协议正文的公开副本
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
-| `opencode` | 无 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
+| `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
@@ -84,16 +84,17 @@ Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作�
 
 ### 模型服务
 
-Claude 与 Codex 各有一项设置「模型服务」（`claude.modelProvider`、`codex.modelProvider`，`format: coda-model-provider`），
+Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.modelProvider`、`codex.modelProvider`、`opencode.modelProvider`，`format: coda-model-provider`），
 选一个别的插件提供的[模型服务](https://github.com/coda-console/coda/blob/main/docs/plugins.md#模型服务)，如 Magpie。
-只经会话进程的启动参数与按会话的覆盖生效，不改运行机上的 `~/.claude/settings.json`、`~/.codex/config.toml`；不选、或提供它的插件卸载了，与原来一样。
+只经会话进程的启动参数与按会话的覆盖生效，不改运行机上的 `~/.claude/settings.json`、`~/.codex/config.toml`、`opencode.json`；不选、或提供它的插件卸载了，与原来一样。
 
 - **接口**：Claude 只接 `anthropic-messages` 的服务，Codex 只接 `openai-responses` 的（Codex 0.162 已不接受 `wire_api = "chat"`）。
+  OpenCode 接 `openai-completions`、`openai-responses` 与 `anthropic-messages`。
   选了别的接口的服务，入口只在标准错误记一行，不列它的模型。
-- **模型**：会话打开时从服务的「地址/models」列出模型，问法同 Coda 的「检查可用模型」（Claude 带 `x-api-key`，Codex 带 `Authorization: Bearer`），
+- **Claude / Codex 模型**：会话打开时从服务的「地址/models」列出模型，问法同 Coda 的「检查可用模型」（Claude 带 `x-api-key`，Codex 带 `Authorization: Bearer`），
   排在 Agent 自己的模型后面：ID 是 `<服务>/<模型>`（如 `magpie/anthropic/deepseek/deepseek-v4-pro`），名字是「<模型> (<服务标题>)」，没有推理强度可选。
   列不出来时只有 Agent 自己的模型。
-- **何时换**：选模型只是记下（Coda 读模型目录时会把每个模型都选一遍，不该因此启动什么）；下一轮开始前，所选模型的服务与会话正在用的不同，才把会话换过去。
+- **Claude / Codex 何时换**：选模型只是记下（Coda 读模型目录时会把每个模型都选一遍，不该因此启动什么）；下一轮开始前，所选模型的服务与会话正在用的不同，才把会话换过去。
 - **Claude**：以 `resume` 新起一个 SDK 会话（还没说过话的会话用同一个会话 ID 新起），flag settings 的 `env` 设 `ANTHROPIC_BASE_URL`、
   `ANTHROPIC_AUTH_TOKEN`（服务的 Key，没有 Key 写 `none`）与 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、
   `CLAUDE_CODE_SUBAGENT_MODEL`（子 Agent、标题等后台调用也用这个模型）。运行机自己通往 API 的办法一样都不带过去：`ANTHROPIC_API_KEY`、
@@ -108,6 +109,20 @@ Claude 与 Codex 各有一项设置「模型服务」（`claude.modelProvider`�
   codex-acp 在 resume 之前就记下了 gateway，新 app-server 起不来时还留着已关闭的旧客户端，都不能拿来当换成了）。
   一句话都还没说的线程 Codex 没有写下来，resume 不了：先以第一条消息（前 80 字）为名 `thread/name/set` 把它写下，这也就成了会话标题（不再由 Codex 生成）。
   Codex 没有服务的模型的元数据，它为此发的「Model metadata … not found」与恢复时的「recorded with model …」提示不进会话。
+- **OpenCode**：启动 `opencode acp` 前按接口从「地址/models」列出模型，通过子进程的 `OPENCODE_CONFIG_CONTENT` 加一个独立 Provider，
+  ID 为 `coda-<插件>.<服务>`（如 `coda-magpie.openai`），模型 ID 为 `<Provider>/<模型>`，保留模型名里的斜杠。模型列表、选择与恢复由 OpenCode 原生处理，
+  切模型不用重启；服务的标题作为 Provider 名显示。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
+  都是 OpenCode 自带的 SDK。Anthropic 请求模型列表用服务给的地址，生成请求的地址若未以 `/v1` 结尾则补上。
+  Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。列不出模型、接口不支持或 Key 文件读不到时不添加服务，原来的模型照旧。
+  已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
+  防止模型 ID、标题等服务数据触发 OpenCode 的 `{env:…}` / `{file:…}` 展开。真正无效的配置仍明确报错。机器与项目的 Provider 启停限制也仍然有效。
+  用户未加引号的布尔值、数字等变量节点在解析时暂用等长占位节点，合并后原样还原，由 OpenCode 自己展开；合并器不读取它们引用的环境变量或文件。
+  `"provider":{env:VAR}` 也可由环境变量提供整个 Provider 对象：合并器只读取该对象的结构，结果放进子进程独有的变量，
+  仍交给 OpenCode 做一次环境变量展开，再处理文件模板。原变量及其他配置入口保持不变；对象里的相对文件引用仍以原生会话目录为基准。
+  `/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
+  服务给出 `context_length` / `max_output_tokens` 时用它们；不根据模型名猜测图片与推理能力。
+  真 CLI 的本地验证（不使用实际模型服务与登录）：`OPENCODE_TEST_BINARY=/absolute/path/to/opencode node --test test/plugins/opencode/native.test.mjs`，
+  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，以及服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置。
 
 ### Grok 审批模式
 
