@@ -62,7 +62,7 @@ docs/agent-protocol.md   Coda 接入协议正文的公开副本
 | `codex-accounts` | `proper-lockfile` 4.1.2；用依赖插件 `codex` 的 Codex CLI | 无；依赖 `codex` 插件 |
 | `kimi` | 无 | Kimi CLI 2.1.1 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
 | `grok` | 无 | Grok CLI 1.0.52 及以上（设置动作安装或升级；面板可从 Coda 安装、登录） |
-| `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 1.0.151 及以上（设置动作安装或升级） |
+| `opencode` | `jsonc-parser` 3.3.1 | 已登录的 OpenCode CLI 2.1.4 及以上（设置动作安装或升级，OpenCode 1 升到 2） |
 
 带依赖的插件各有自己的 `package-lock.json`（`node_modules` 不提交）；Coda 在插件的版本目录里 `npm ci` 装它们，
 这几个插件不是本仓库根的 npm workspaces（根包是契约检查，装它不该带上 Codex、Claude 的平台二进制）。
@@ -77,9 +77,15 @@ Kimi、Grok、OpenCode、Cursor 的 CLI 不接受它：入口不转给 CLI，在
 把指令包在 `<coda-session-instructions>` 里作为单独的一段文本放在用户输入前面，之后与 `session/load` 恢复的会话不再送；
 第一条是斜杠命令时留到下一条。Codex 另声明插话：一轮已经结束时收到的 `_session/steering` 回 `promptRequired`，不另开一轮。
 
+OpenCode 遇到模型服务的 429，会照 `Retry-After` 等（OpenCode 2 每次最多 15 分钟、最多 10 次），并在 ACP 里用 `session_info_update` 的
+`_meta["opencode/retry"]` 说下次什么时候重试、服务报了什么；子 Agent（OpenCode 的 `subagent`）的等待也报在等它的那一轮的会话里。
+Coda 自己对服务故障只等一分钟以内，所以一轮里 OpenCode 要等超过一分钟才重试时，入口先 `session/cancel` 停下这一轮（子 Agent 随之停下），
+再把这一轮答成失败，原因是服务给的原文加上 OpenCode 要等多久；停下后 OpenCode 回的是什么都不转出。一分钟以内的等待照旧由 OpenCode 自己处理。
+不在入口里按厂商的错误文字判断额度耗尽。
+
 Kimi、Grok、OpenCode、Cursor 带设置动作（`contributes.setup`，`scripts/setup.mjs`），用户安装或更新插件时 Coda 在每台机器上运行：
 CLI 不在或运行不了就用它自己的安装程序安装，低于插件要求的版本就升级，较新的版本保留。要求的版本：Kimi 2.1.1（入口读得懂的会话文件布局）、
-Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 1.0.151（`opencode acp` 第一个报当前模型、恢复的会话能接着跑的版本：之前 `session/load` 不登记会话，下一轮报 Session not found）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
+Grok 1.0.52（审批模式通知核对过的版本）、OpenCode 2.1.4（入口核对过的版本；OpenCode 1 遇到模型服务的 `Retry-After` 会一声不响地等，多久都等，见下文。用 OpenCode 2 自己的安装程序 `https://opencode.ai/v2/install`，装在同一个 `~/.opencode/bin`，OpenCode 1 的会话由它按原 ID 接过去）；Cursor 没有已知的下限，能运行就行（它自己会更新）。
 Codex 与 Claude 的 CLI、SDK 是插件的 npm 依赖，不需要设置动作。
 
 ### 模型服务
@@ -113,8 +119,8 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   Codex 没有服务的模型的元数据，它为此发的「Model metadata … not found」与恢复时的「recorded with model …」提示不进会话。
 - **OpenCode**：启动 `opencode acp` 前按接口从每个服务的「地址/models」列出模型，通过子进程的 `OPENCODE_CONFIG_CONTENT` 给每个服务加一个独立 Provider，
   ID 为 `coda-<插件>.<服务>`（如 `coda-magpie.openai`），模型 ID 为 `<Provider>/<模型>`，保留模型名里的斜杠。模型列表、选择与恢复由 OpenCode 原生处理，
-  切模型不用重启；服务的标题作为 Provider 名。入口把 OpenCode 报给 Coda 的模型配置项按 Provider 分组（OpenCode 写作「Provider 名/模型名」，
-  组名取前一段、组内取后一段），OpenCode 自己的 Provider 也各成一组；模型 ID 不变。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
+  切模型不用重启；服务的标题作为 Provider 名。入口把 OpenCode 报给 Coda 的模型配置项按 Provider 分组（OpenCode 写作「Provider ID/模型名」，
+  组内去掉前缀）：服务的组名是它完整的标题，OpenCode 自己的 Provider 各成一组，组名是 Provider ID（OpenCode 只报这个）；模型 ID 不变。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
   都是 OpenCode 自带的 SDK。Anthropic 请求模型列表用服务给的地址，生成请求的地址若未以 `/v1` 结尾则补上。
   Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。哪个服务列不出模型、接口不支持或 Key 文件读不到，就不添加那一个，其他的与原来的模型照旧。
   已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
@@ -125,7 +131,7 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   `/models` 没有上下文与输出上限时暂用 32768 / 4096 tokens，
   服务给出 `context_length` / `max_output_tokens` 时用它们；不根据模型名猜测图片与推理能力。
   真 CLI 的本地验证（不使用实际模型服务与登录）：`OPENCODE_TEST_BINARY=/absolute/path/to/opencode node --test test/plugins/opencode/native.test.mjs`，
-  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，以及服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置。
+  覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置，以及主会话与子 Agent 里长短两种 `Retry-After`。
 
 ### Grok 审批模式
 

@@ -3,7 +3,7 @@
   "id": "opencode",
   "displayName": "OpenCode",
   "description": "OpenCode Agent：Coda 的入口在运行机的 opencode acp 与 Coda 之间转发，并把会话指令放进原生会话的第一轮。",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "contributes": {
     "agents": [
       {
@@ -28,7 +28,7 @@
           "opencode.json",
           "opencode.jsonc"
         ],
-        "setupHint": "请在运行机安装并登录 OpenCode，确认后端能执行 opencode acp。"
+        "setupHint": "请在运行机安装并登录 OpenCode 2（2.1.4 及以上），确认后端能执行 opencode acp。"
       }
     ],
     "configuration": {
