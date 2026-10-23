@@ -27,7 +27,7 @@ Pi 等选用模型服务的插件直接选它，不用填地址和 Key。Magpie 
 
 ## 安装
 
-「设置 › 插件」的市场里选「Magpie」安装。插件的设置动作（`scripts/setup.mjs`）在你安装、更新插件或改了它的设置时于每台机器上运行：
+在「设置 › 插件」的商店里选「Magpie」安装。插件的设置动作（`scripts/setup.mjs`）在你安装、更新插件或改了它的设置时于每台机器上运行：
 
 1. 网关已经在应答（开着 Magpie 的 App，或已有它的常驻服务），只按[设置](#设置)告诉 Magpie 读不读 Agent 的登录，别的不动。
 2. 没有能运行的 `magpie`，用官方安装程序装上（`curl -fsSL https://usemagpie.ai/install.sh | sh`）：Mac 上把 magpie.app 放进 `/Applications`

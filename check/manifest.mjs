@@ -12,6 +12,8 @@ import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUP
   MODEL_PROVIDER, SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT, STRING_FORMATS } from './coda.mjs';
 
 class Invalid extends Error {}
+// The categories Coda's own plugins use, which its plugin pages list first, in this order.
+export const CATEGORIES = ['Agent', '模型与账号', '工作流程', '机器与资源', 'Skills 与工具'];
 const check = (condition, message) => { if (!condition) throw new Invalid(message); };
 const object = (value, where) => check(value && typeof value === 'object' && !Array.isArray(value), `${where} 须为对象`);
 const keys = (value, allowed, where) => {
@@ -295,6 +297,14 @@ export function checkManifest(dir, say) {
     return manifest.contributes;
   }) ?? {};
   if (typeof manifest.version !== 'string') say.warn('manifest.version', 'package.json 没有 version：Coda 只认提交，version 只作显示，但安装确认里会空着');
+  // Coda's plugin pages group plugins by the first of their `categories` (Coda's docs/plugins.md「商店」), as VS Code writes them.
+  part('manifest.categories', () => {
+    check(manifest.categories === undefined || (Array.isArray(manifest.categories) && manifest.categories.every(c => typeof c === 'string')), 'categories 须为文本的数组');
+    const category = manifest.categories?.[0]?.trim();
+    if (!category) say.warn('manifest.categories', `package.json 没有 categories：Coda 的插件页把它归「其他」；分类用 ${CATEGORIES.join('、')} 之一`);
+    else if (!CATEGORIES.includes(category)) say.warn('manifest.categories', `分类「${category}」不是 Coda 自己的插件用的（${CATEGORIES.join('、')}）：插件页把它排在这些之后`);
+    return category;
+  }, category => category && `分类 ${category}`);
   const name = id ?? String(declaredId);
 
   const settings = part('manifest.settings', () => {
