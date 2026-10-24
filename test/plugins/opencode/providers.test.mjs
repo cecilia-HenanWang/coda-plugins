@@ -91,6 +91,15 @@ test('several services chosen are a native provider each; one that cannot list i
   assert.deepEqual([providers['coda-space.s-proxy'].name, Object.keys(providers['coda-space.s-proxy'].models)], ['rig · Proxy', ['p/model']]);
 });
 
+test('with the plugin\'s state directory, a service that cannot list its models now is a provider of those it last listed', async t => {
+  const state = mkdtempSync(join(tmpdir(), 'coda-opencode-state-'));
+  t.after(() => rmSync(state, { recursive: true, force: true }));
+  const env = { ...provided(), CODA_PLUGIN_STATE: state };
+  await providerEnvironment(env, async () => Response.json({ data: [{ id: 'vendor/model', context_length: 65536 }] }));
+  const result = await providerEnvironment(env, async () => new Response('', { status: 503 }));
+  assert.deepEqual(JSON.parse(result.OPENCODE_CONFIG_CONTENT).provider['coda-magpie.openai'].models['vendor/model'].limit, { context: 65536, output: 4096 });
+});
+
 test('service data stays literal through OpenCode interpolation, including model keys, names, quotes and backslashes', async () => {
   const ids = ['vendor/{env:SECRET}', 'vendor/{file:/private/file}', 'vendor/"quote\\{env:SECRET}', String.raw`vendor/\u007benv:SECRET}`];
   const env = await providerEnvironment(provided({ title: 'Title {env:SECRET}', url: 'https://example.com/{env:SECRET}' }),

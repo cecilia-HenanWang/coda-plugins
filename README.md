@@ -97,7 +97,11 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   勾了别的接口的服务（旧设置留下的），入口只在标准错误记一行，不列它的模型。
 - **Claude / Codex 模型**：会话打开时从每个服务的「地址/models」列出模型（各服务同时问），问法同 Coda 的「检查可用模型」（Claude 带 `x-api-key`，Codex 带 `Authorization: Bearer`），
   按勾选的先后排在 Agent 自己的模型后面：ID 是 `<服务>/<模型>`（如 `magpie/anthropic/deepseek/deepseek-v4-pro`），名字只是模型（如 `deepseek/deepseek-v4-pro`），
-  在服务那一组里，没有推理强度可选。哪个服务列不出来就没有它那一组，其他的照旧。Codex 的分组在 codex-acp 生成模型配置项的地方打补丁做。
+  在服务那一组里，没有推理强度可选。Codex 的分组在 codex-acp 生成模型配置项的地方打补丁做。
+- **列不出来时**（三个插件一样）：每个服务列出的模型记在插件状态目录（`CODA_PLUGIN_STATE`）的 `service-models/` 下（文件名是服务名，`/` 换成 `.`），
+  有变化才重写；某次问不到（那台机器在重启、网络暂时不通、超时）就沿用上次列出的，在标准错误记一行，那一组照常出现，
+  选它的模型时请求照常失败。从没列出过、或后端没有状态目录的，这次就没有它那一组，其他的照旧。
+  这样 Coda 的模型目录（读到后保留一小时）不会因为一次没问到就整整一小时缺这一组。
 - **Claude / Codex 何时换**：选模型只是记下（Coda 读模型目录时会把每个模型都选一遍，不该因此启动什么）；下一轮开始前，所选模型的服务与会话正在用的不同（换到另一个服务、或回到自己的），才把会话换过去。
 - **Claude**：以 `resume` 新起一个 SDK 会话（还没说过话的会话用同一个会话 ID 新起），flag settings 的 `env` 设 `ANTHROPIC_BASE_URL`、
   `ANTHROPIC_AUTH_TOKEN`（服务的 Key，没有 Key 写 `none`）与 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`、
@@ -118,7 +122,7 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   切模型不用重启；服务的标题作为 Provider 名。入口把 OpenCode 报给 Coda 的模型配置项按 Provider 分组（OpenCode 写作「Provider ID/模型名」，
   组内去掉前缀）：服务的组名是它完整的标题，OpenCode 自己的 Provider 各成一组，组名是 Provider ID（OpenCode 只报这个）；模型 ID 不变。Chat 用 `@ai-sdk/openai-compatible`，Responses 用 `@ai-sdk/openai`，Anthropic 用 `@ai-sdk/anthropic`，
   都是 OpenCode 自带的 SDK。Anthropic 请求模型列表用服务给的地址，生成请求的地址若未以 `/v1` 结尾则补上。
-  Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。哪个服务列不出模型、接口不支持或 Key 文件读不到，就不添加那一个，其他的与原来的模型照旧。
+  Key 只用服务的；无 Key 时显式传 `none`，避免 SDK 回退到机器自己的环境变量凭据。接口不支持或 Key 文件读不到，就不添加那一个；列不出模型时同上沿用上次列出的，从没列出过的才不添加。其他的与原来的模型照旧。
   已有的 inline 配置支持 JSONC（注释、尾逗号），合并时保留用户自己的变量与字符串转义；服务生成片段中的 `{` 在 JSON 字符串内编码成 `\u007b`，
   防止模型 ID、标题等服务数据触发 OpenCode 的 `{env:…}` / `{file:…}` 展开。真正无效的配置仍明确报错。机器与项目的 Provider 启停限制也仍然有效。
   用户未加引号的布尔值、数字等变量节点在解析时暂用等长占位节点，合并后原样还原，由 OpenCode 自己展开；合并器不读取它们引用的环境变量或文件。

@@ -7,6 +7,7 @@
 // configuration is not touched.
 import { existsSync, readFileSync } from 'node:fs';
 import { carriedInstructions } from './instructions.mjs';
+import { lastListed } from './last-listed.mjs';
 
 export const SETTING = 'codex.modelProviders';
 const log = text => process.stderr.write(`[codex-agent] ${text}\n`);
@@ -28,15 +29,18 @@ export function chosenServices(env = process.env) {
   });
 }
 
-// The models a service lists, as Codex's model list has them (app-server `model/list`): `<服务>/<模型>`, named by the
-// model, with no effort or speed to choose; `codaService` and `codaGroup` say whose they are, for the session's move and
-// the model's group.
-export async function serviceModels({ ref, title, url, key }, fetcher = fetch) {
-  const at = `${url.replace(/\/+$/, '')}/models`;
-  const response = await fetcher(at, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(LIST_TIMEOUT) });
-  if (!response.ok) throw new Error(`${at} 回答 ${response.status}`);
-  const body = await response.json();
-  return (Array.isArray(body?.data) ? body.data : []).filter(model => typeof model?.id === 'string' && model.id).map(model => ({
+// The models a service lists, or last listed when it cannot be asked now (last-listed.mjs), as Codex's model list has
+// them (app-server `model/list`): `<服务>/<模型>`, named by the model, with no effort or speed to choose; `codaService` and
+// `codaGroup` say whose they are, for the session's move and the model's group.
+export async function serviceModels({ ref, title, url, key }, fetcher = fetch, state) {
+  const listed = await lastListed(ref, async () => {
+    const at = `${url.replace(/\/+$/, '')}/models`;
+    const response = await fetcher(at, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(LIST_TIMEOUT) });
+    if (!response.ok) throw new Error(`${at} 回答 ${response.status}`);
+    const body = await response.json();
+    return (Array.isArray(body?.data) ? body.data : []).filter(model => typeof model?.id === 'string' && model.id);
+  }, state, log);
+  return listed.map(model => ({
     id: `${ref}/${model.id}`, model: model.id, displayName: model.id, description: '', hidden: false, isDefault: false,
     supportedReasoningEfforts: [], defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], serviceTiers: [],
     codaService: ref, codaGroup: title }));
@@ -47,10 +51,11 @@ export class ServiceModels {
   // `on`: the service the session runs on, null on Codex's own (where it opens), undefined when a move to one or another
   // failed partway: codex-acp sets its gateway before the thread is resumed on it, so that is no sign of either, and keeps
   // its old client, closed, when the app-server it started again does not start.
-  constructor(services = chosenServices(), fetcher = fetch) { Object.assign(this, { services, fetcher }); this.models = []; this.on = null; }
-  // Theirs in the order the services are chosen: none of one that cannot list them now.
+  // `state`: the plugin's state directory, where what each service last listed is kept.
+  constructor(services = chosenServices(), fetcher = fetch, state = null) { Object.assign(this, { services, fetcher, state }); this.models = []; this.on = null; }
+  // Theirs in the order the services are chosen: none of one that cannot list them now and never did.
   list() {
-    return this.listed ??= Promise.all(this.services.map(service => serviceModels(service, this.fetcher)
+    return this.listed ??= Promise.all(this.services.map(service => serviceModels(service, this.fetcher, this.state)
       .catch(e => { log(`模型服务 ${service.ref} 列不出模型：${e.message}`); return []; }))).then(lists => (this.models = lists.flat()));
   }
   served(model) { return this.models.find(m => m.id === model) ?? null; }
@@ -106,7 +111,7 @@ export class ServiceModels {
 }
 const firstWords = prompt => Array.from((prompt ?? []).filter(b => b.type === 'text').map(b => b.text).join(' ').replace(/\s+/g, ' ').trim()).slice(0, 80).join('') || 'Coda';
 
-export const services = new ServiceModels();
+export const services = new ServiceModels(chosenServices(), fetch, process.env.CODA_PLUGIN_STATE);
 const patches = [
   // Codex's models, then the services'.
   ['    } while (cursor);\n    return models;\n  }', '    } while (cursor);\n    return [...models, ...await codaServices.list()];\n  }', 1],

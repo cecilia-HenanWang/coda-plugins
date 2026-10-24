@@ -1,7 +1,7 @@
 // The model service chosen for Claude (plugins/claude/agent/providers.mjs): which one, what it lists, what a session on it runs with.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chosenServices, listedModels, serviceModels, serviceSettings } from '../../../plugins/claude/agent/providers.mjs';
@@ -39,6 +39,16 @@ test('its models are listed as an Anthropic client asks, named by the model, in 
   // A service that cannot list now adds none, and the others' still come, and the session opens with Claude's own.
   assert.deepEqual(await listedModels([{ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' }]), []);
   assert.deepEqual(await listedModels([]), []);
+});
+
+test('with the plugin\'s state directory, a service that cannot list now lists as it last did, in its group as titled now', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'coda-claude-state-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await mkdir(join(state, 'service-models'));
+  await writeFile(join(state, 'service-models', 'space.s-magpie.json'), JSON.stringify([{ id: 'deepseek/deepseek-v4-pro' }]));
+  assert.deepEqual(await listedModels([{ ref: 'space/s-magpie', title: 'macmini · Magpie · Anthropic', url: 'http://127.0.0.1:1' }], state), [
+    { id: 'space/s-magpie/deepseek/deepseek-v4-pro', name: 'deepseek/deepseek-v4-pro', efforts: [], model: 'deepseek/deepseek-v4-pro',
+      service: 'space/s-magpie', group: 'macmini · Magpie · Anthropic' }]);
 });
 
 test('a session on a service\'s model runs Claude Code with the service as its API and that model for every role, none of the machine\'s credentials with it', () => {

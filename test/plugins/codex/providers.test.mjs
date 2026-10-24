@@ -47,6 +47,15 @@ test('its models are listed as Codex\'s model list has them, named by the model,
   assert.equal(services.list(), services.list());
 });
 
+test('with the plugin\'s state directory, a service that cannot list now lists as it last did', async t => {
+  const state = mkdtempSync(join(tmpdir(), 'coda-codex-state-'));
+  t.after(() => rmSync(state, { recursive: true, force: true }));
+  const service = { ref: 'space/s-magpie', title: 'macmini · Magpie · OpenAI Responses', url: 'http://127.0.0.1:1' };
+  await new ServiceModels([service], async () => Response.json({ data: [{ id: 'fake/alpha' }] }), state).list();
+  assert.deepEqual((await new ServiceModels([service], fetch, state).list()).map(m => [m.id, m.codaGroup]),
+    [['space/s-magpie/fake/alpha', 'macmini · Magpie · OpenAI Responses']]);
+});
+
 test('several services: their models a group each after Codex\'s own, in the order chosen; a turn on one\'s model moves the session to that one', async () => {
   const lists = { 'http://a/v1/models': ['fake/alpha'], 'http://b/v1/models': ['fake/beta'] };
   const services = new ServiceModels([{ ref: 'b/responses', title: 'B', url: 'http://b/v1' }, { ref: 'a/responses', title: 'A', url: 'http://a/v1', key: 'sk-a' }],

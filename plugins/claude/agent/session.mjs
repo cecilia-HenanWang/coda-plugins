@@ -146,7 +146,7 @@ export class ClaudeSession {
         onElicitation: (request, context) => this.elicitation(request, context),
         stderr: data => process.stderr.write(data),
       };
-      const listed = listedModels(this.services);
+      const listed = listedModels(this.services, this.env.CODA_PLUGIN_STATE);
       this.start(resume ? { resume } : { sessionId: this.sessionId });
       const initialization = await this.initialized(), served = await listed;
       if (this.phase !== 'starting') throw failure('Claude 会话在初始化时结束', -32001);

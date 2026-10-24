@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { parseTree } from 'jsonc-parser';
+import { lastListed } from './last-listed.mjs';
 
 export const SETTING = 'opencode.modelProviders';
 const packages = { 'openai-completions': '@ai-sdk/openai-compatible', 'openai-responses': '@ai-sdk/openai', 'anthropic-messages': '@ai-sdk/anthropic' };
@@ -31,7 +32,9 @@ export const providerId = ref => `coda-${ref.replaceAll('/', '.')}`;
 
 // Same endpoint and authentication as Coda's model check. Keep slash-containing model IDs intact and follow Anthropic's
 // pagination, bounded by a single timeout and ten pages. Nothing from the machine's own API credentials is sent here.
-export async function serviceModels({ api, url, key }, fetcher = fetch) {
+// With the plugin's state directory, one that cannot list now lists as it last did (last-listed.mjs).
+export const serviceModels = (service, fetcher = fetch, state) => lastListed(service.ref, () => askModels(service, fetcher), state, log);
+async function askModels({ api, url, key }, fetcher) {
   const at = `${url.replace(/\/+$/, '')}/models`, anthropic = api === 'anthropic-messages';
   const headers = anthropic ? { 'anthropic-version': '2023-06-01', ...(key ? { 'x-api-key': key } : {}) }
     : key ? { Authorization: `Bearer ${key}` } : {};
@@ -108,7 +111,7 @@ export const serviceNames = services => Object.fromEntries(services.map(service 
 
 export async function providerEnvironment(env = process.env, fetcher = fetch, services = chosenServices(env)) {
   const listed = await Promise.all(services.map(async service => {
-    try { return [service, await serviceModels(service, fetcher)]; }
+    try { return [service, await serviceModels(service, fetcher, env.CODA_PLUGIN_STATE)]; }
     catch (error) { log(`模型服务 ${service.ref} 列不出模型：${error.message}`); return [service, []]; }
   }));
   // Invalid user configuration still fails clearly, without echoing config contents (which may include credentials).
