@@ -290,8 +290,9 @@ export function checkManifest(dir, say) {
   const contributes = part('manifest.contributes', () => {
     check(manifest.contributes && typeof manifest.contributes === 'object' && !Array.isArray(manifest.contributes),
       'contributes 须为对象（Coda 只把带 contributes 的目录当插件）');
+    // A kind this copy does not know may be one Coda added since: said, for Coda's reading of the source to decide.
     const unknown = Object.keys(manifest.contributes).filter(k => !CONTRIBUTES.includes(k) && !POINT_KEYS.includes(k));
-    check(!unknown.length, `contributes 里有 Coda 不支持的贡献：${unknown.join('、')}`);
+    if (unknown.length) say.warn('manifest.contributes-unknown', `contributes 里有检查不认识的贡献：${unknown.join('、')}：可能是写错，或是 Coda 新加的；以 Coda「从仓库添加…」的读取为准`);
     // What is checked here is installed from a repository or npm, never as a copy Coda ships.
     for (const [key, refusal] of Object.entries(BUILTIN_ONLY)) check(manifest.contributes[key] === undefined, `contributes.${key}：${refusal}`);
     return manifest.contributes;

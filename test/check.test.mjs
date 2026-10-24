@@ -59,11 +59,14 @@ describe('this repository', () => {
     assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
     assert.match(report.items.find(item => item.rule === 'panel.read').message, /card ×1.*button ×1.*meter ×1/);
   });
-  // Coda's own keys, and those the points of the plugins Coda ships take (the resources plugin's `panels`); no other.
-  test('contributes takes what Coda takes: its own keys and the points of the plugins it ships', async () => {
-    const read = async contributes => failed((await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report);
-    assert.ok(!(await read({ panels: [], executors: [] })).includes('manifest.contributes'));
-    assert.ok((await read({ menus: [] })).includes('manifest.contributes'));
+  // Coda's own keys, and those the points of the plugins Coda ships take (the resources plugin's `panels`), pass; another is
+  // said, not failed: it may be one Coda added since this copy, which Coda's reading decides.
+  test('contributes takes what Coda takes, and says what it does not know without failing it', async () => {
+    const read = async contributes => (await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report;
+    const known = await read({ panels: [], executors: [] }), other = await read({ menus: [] });
+    assert.ok(!rules(known, 'warn').includes('manifest.contributes-unknown') && !failed(known).includes('manifest.contributes'));
+    assert.deepEqual(failed(other), []);
+    assert.match(other.items.find(item => item.rule === 'manifest.contributes-unknown').message, /menus.*以 Coda「从仓库添加…」的读取为准/);
   });
   test('a plugin reached through a symbolic link is measured from the real repository', async () => {
     const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
@@ -256,7 +259,6 @@ describe('manifests Coda does not take', () => {
     assert.doesNotMatch(await said('@someone/review', 'review'), /内置插件/);
     assert.doesNotMatch(await said('@coda-console/liar', 'liar'), /内置插件/);
   });
-  test('a contribution Coda does not know', () => manifestFails({ manifest: { contributes: { menus: [] } } }, 'manifest.contributes'));
   test('what only a plugin Coda ships may contribute', async () => {
     await manifestFails({ manifest: { contributes: { gitCredentials: [{ url: 'https://example.com', command: 'exec true' }] } } }, 'manifest.contributes', /Git 凭据/);
     await manifestFails({ manifest: { contributes: { repositories: { command: 'exec true' } } } }, 'manifest.contributes', /仓库列表/);

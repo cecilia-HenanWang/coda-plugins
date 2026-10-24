@@ -111,7 +111,7 @@ export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
 export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands', 'gitCredentials',
   'repositories', 'services', 'setup', 'skills', 'environment', 'path', 'endpoints', 'mcpServers', 'views', 'modelProviders', 'executors'];
 // The keys of `contributes` points of the plugins Coda ships take (Coda's docs/plugins.md「写在 contributes 里的扩展点」): the
-// resources plugin's `panels`. Anything else is refused.
+// resources plugin's `panels`. Anything else is said, not refused: Coda may have added it since this copy.
 export const POINT_KEYS = ['panels'];
 // What only a plugin Coda ships may contribute, one installed from a repository or npm being refused it
 // (backend/src/components/plugins/plugin-source-rules.mjs catalogProblem): the clients do not show these in the confirmation yet.
