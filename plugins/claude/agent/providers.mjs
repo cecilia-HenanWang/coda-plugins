@@ -4,6 +4,7 @@
 // its API (`serviceSettings`), set for that session's process only.
 import { readFileSync } from 'node:fs';
 import { authOverrides } from './auth.mjs';
+import { lastListed } from './last-listed.mjs';
 
 export const SETTING = 'claude.modelProviders';
 const log = text => process.stderr.write(`[claude-agent] ${text}\n`);
@@ -25,15 +26,20 @@ export function chosenServices(env = process.env) {
   });
 }
 
-// The models a service lists, asked as an Anthropic client asks (Coda's「检查可用模型」): `<服务>/<模型>`, named by the
-// model, in the service's group. They have no effort to choose.
-export async function serviceModels({ ref, title, url, key }, fetcher = fetch) {
-  const at = `${url.replace(/\/+$/, '')}/models?limit=1000`;
-  const response = await fetcher(at, { headers: key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {}, signal: AbortSignal.timeout(LIST_TIMEOUT) });
-  if (!response.ok) throw new Error(`${at} 回答 ${response.status}`);
-  const body = await response.json();
-  return (Array.isArray(body?.data) ? body.data : []).filter(model => typeof model?.id === 'string' && model.id)
-    .map(model => ({ id: `${ref}/${model.id}`, name: model.id, efforts: [], model: model.id, service: ref, group: title }));
+// The models a service lists, asked as an Anthropic client asks (Coda's「检查可用模型」), or as it last listed them when
+// it cannot be asked now (last-listed.mjs): `<服务>/<模型>`, named by the model, in the service's group. They have no
+// effort to choose.
+export async function serviceModels({ ref, title, url, key }, fetcher = fetch, state) {
+  const listed = await lastListed(ref, async () => {
+    const at = `${url.replace(/\/+$/, '')}/models?limit=1000`;
+    const response = await fetcher(at, { headers: key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {}, signal: AbortSignal.timeout(LIST_TIMEOUT) });
+    if (!response.ok) throw new Error(`${at} 回答 ${response.status}`);
+    const body = await response.json();
+    // Only a list replaces the one kept: an answer of another shape is the service not answering.
+    if (!Array.isArray(body?.data)) throw new Error(`${at} 的回答不是模型列表`);
+    return body.data.filter(model => typeof model?.id === 'string' && model.id);
+  }, state, log);
+  return listed.map(model => ({ id: `${ref}/${model.id}`, name: model.id, efforts: [], model: model.id, service: ref, group: title }));
 }
 
 // The flag settings Claude Code runs a service's model with (above the machine's and the project's settings, its environment
@@ -46,10 +52,11 @@ export function serviceSettings({ url, key }, model) {
     CLAUDE_CODE_SUBAGENT_MODEL: model } };
 }
 
-// The services' models, listed with Claude's own in the order the services are chosen: none of one that cannot list them now.
-export async function listedModels(services) {
+// The services' models, listed with Claude's own in the order the services are chosen: none of one that cannot list them
+// now and never did (`state`: the plugin's state directory).
+export async function listedModels(services, state) {
   return (await Promise.all(services.map(async service => {
-    try { return await serviceModels(service); }
+    try { return await serviceModels(service, fetch, state); }
     catch (e) { log(`模型服务 ${service.ref} 列不出模型：${e.message}`); return []; }
   }))).flat();
 }

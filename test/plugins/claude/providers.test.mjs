@@ -36,9 +36,25 @@ test('its models are listed as an Anthropic client asks, named by the model, in 
   assert.deepEqual(asked, [['http://127.0.0.1:3425/models?limit=1000', {}],
     ['https://example.com/models?limit=1000', { 'x-api-key': 'sk', 'anthropic-version': '2023-06-01' }]]);
   await assert.rejects(serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com' }, async () => new Response('', { status: 401 })), /回答 401/);
+  await assert.rejects(serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com' }, async () => Response.json({ error: { message: 'upstream' } })), /不是模型列表/);
   // A service that cannot list now adds none, and the others' still come, and the session opens with Claude's own.
   assert.deepEqual(await listedModels([{ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' }]), []);
   assert.deepEqual(await listedModels([]), []);
+});
+
+test('with the plugin\'s state directory, a service that cannot list now lists as it last did, in its group as titled now', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'coda-claude-state-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const service = { ref: 'space/s-magpie', title: 'macmini · Magpie · Anthropic', url: 'http://127.0.0.1:1' };
+  const listed = [{ id: 'space/s-magpie/deepseek/deepseek-v4-pro', name: 'deepseek/deepseek-v4-pro', efforts: [], model: 'deepseek/deepseek-v4-pro',
+    service: 'space/s-magpie', group: 'macmini · Magpie · Anthropic' }];
+  assert.deepEqual(await serviceModels(service, async () => Response.json({ data: [{ id: 'deepseek/deepseek-v4-pro' }] }), state), listed);
+  // An answer that is not a list is the service not answering: what it last listed stays, for a failure after it too.
+  assert.deepEqual(await serviceModels(service, async () => Response.json({ error: { message: 'upstream unavailable' } }), state), listed);
+  assert.deepEqual(await listedModels([service], state), listed);
+  // A list, an empty one too, replaces it.
+  assert.deepEqual(await serviceModels(service, async () => Response.json({ data: [] }), state), []);
+  assert.deepEqual(await listedModels([service], state), []);
 });
 
 test('a session on a service\'s model runs Claude Code with the service as its API and that model for every role, none of the machine\'s credentials with it', () => {
