@@ -59,6 +59,12 @@ describe('this repository', () => {
     assertPasses(report, ['manifest.name', 'manifest.panels', 'panel.read']);
     assert.match(report.items.find(item => item.rule === 'panel.read').message, /card ×1.*button ×1.*meter ×1/);
   });
+  // Coda's own keys, and those the points of the plugins Coda ships take (the resources plugin's `panels`); no other.
+  test('contributes takes what Coda takes: its own keys and the points of the plugins it ships', async () => {
+    const read = async contributes => failed((await checkPlugin(plugin({ manifest: { contributes } }), { manifestOnly: true })).report);
+    assert.ok(!(await read({ panels: [], executors: [] })).includes('manifest.contributes'));
+    assert.ok((await read({ menus: [] })).includes('manifest.contributes'));
+  });
   test('a plugin reached through a symbolic link is measured from the real repository', async () => {
     const link = join(mkdtempSync(join(tmpdir(), 'coda-plugin-check-link-')), 'repo');
     temps.push(join(link, '..'));

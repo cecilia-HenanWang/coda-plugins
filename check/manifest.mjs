@@ -8,7 +8,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from '
 import { basename, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { AGENT_ID, AGENT_LIMITS, BUILTIN_AGENTS, BUILTIN_COMMANDS, BUILTIN_GROUPS, BUILTIN_HERE, BUILTIN_SCOPE, CAPABILITY,
-  CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, BUILTIN_ONLY, CONTRIBUTES, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
+  CODA_COMMANDS, CODA_EVENT_DOMAINS, COMMAND, COMMAND_LIMIT, BUILTIN_ONLY, CONTRIBUTES, POINT_KEYS, EVENT, EVENT_LIMIT, DEPTH, ICON_LIMIT, INSTRUCTIONS_LIMIT, NPM, NPM_LOCK, PANEL_ID, PANEL_LIMITS, PLUGIN_ID, POINT,
   MODEL_PROVIDER, SEGMENT, SERVICE, SETTING_KEY, SETUP_KEYS, SIZE_LIMIT, STRING_FORMATS } from './coda.mjs';
 
 class Invalid extends Error {}
@@ -290,7 +290,7 @@ export function checkManifest(dir, say) {
   const contributes = part('manifest.contributes', () => {
     check(manifest.contributes && typeof manifest.contributes === 'object' && !Array.isArray(manifest.contributes),
       'contributes 须为对象（Coda 只把带 contributes 的目录当插件）');
-    const unknown = Object.keys(manifest.contributes).filter(k => !CONTRIBUTES.includes(k));
+    const unknown = Object.keys(manifest.contributes).filter(k => !CONTRIBUTES.includes(k) && !POINT_KEYS.includes(k));
     check(!unknown.length, `contributes 里有 Coda 不支持的贡献：${unknown.join('、')}`);
     // What is checked here is installed from a repository or npm, never as a copy Coda ships.
     for (const [key, refusal] of Object.entries(BUILTIN_ONLY)) check(manifest.contributes[key] === undefined, `contributes.${key}：${refusal}`);
