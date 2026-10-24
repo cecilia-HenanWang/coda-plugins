@@ -107,9 +107,12 @@ export const SETTING_KEY = /^[a-z][a-z0-9-]*(\.[a-z][A-Za-z0-9]*)+$/;
 export const STRING_FORMATS = ['duration', 'coda-repo', 'coda-directory', 'coda-model-provider', 'coda-model-url'];
 export const MODEL_PROVIDER = /^[a-z][a-z0-9-]{0,39}\/[a-z][a-z0-9-]{0,39}$/;
 export const CAPABILITY = /^[a-z][a-z0-9-]{0,63}$/;
-// What a plugin may contribute (backend/src/components/plugins/plugin-rules.mjs CONTRIBUTES); anything else is refused.
-export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'panels', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands', 'gitCredentials',
-  'repositories', 'services', 'setup', 'skills', 'environment', 'path', 'endpoints', 'mcpServers', 'views', 'modelProviders'];
+// What a plugin may contribute to Coda itself (backend/src/components/plugins/plugin-rules.mjs CONTRIBUTES).
+export const CONTRIBUTES = ['configuration', 'capabilities', 'instructions', 'agents', 'extensionPoints', 'extensions', 'groups', 'events', 'commands', 'gitCredentials',
+  'repositories', 'services', 'setup', 'skills', 'environment', 'path', 'endpoints', 'mcpServers', 'views', 'modelProviders', 'executors'];
+// The keys of `contributes` points of the plugins Coda ships take (Coda's docs/plugins.md「写在 contributes 里的扩展点」): the
+// resources plugin's `panels`. Anything else is refused.
+export const POINT_KEYS = ['panels'];
 // What only a plugin Coda ships may contribute, one installed from a repository or npm being refused it
 // (backend/src/components/plugins/plugin-source-rules.mjs catalogProblem): the clients do not show these in the confirmation yet.
 export const BUILTIN_ONLY = { gitCredentials: '只有 Coda 自带的插件能提供 Git 凭据', repositories: '只有 Coda 自带的插件能提供仓库列表' };
