@@ -314,7 +314,8 @@ gh workflow run publish.yml --repo coda-console/coda-plugins --ref main
 ## 契约检查
 
 扮演 Coda 去读一个插件目录：清单照 Coda 的规则读，Agent 照 Coda 的样子启动、说 Coda 说的话，面板照 Coda 的样子读一次。
-**权威校验仍是 Coda 的「读取来源」**（「从仓库添加…」里的读取）：检查包的规则抄自 Coda，抄的是哪个提交写在 `check/coda.mjs`，两边不一致时以 Coda 为准。
+**权威校验仍是 Coda 的「读取来源」**（「从仓库添加…」里的读取）：检查包的规则抄自 Coda，抄的是哪个提交写在 `check/coda.mjs`，两边不一致时以 Coda 为准；
+`contributes` 里检查不认识的键（写错的，或 Coda 新加、这里还没抄过来的）只提醒，不判失败。
 
 ```sh
 npm ci
