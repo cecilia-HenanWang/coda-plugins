@@ -38,7 +38,9 @@ export async function serviceModels({ ref, title, url, key }, fetcher = fetch, s
     const response = await fetcher(at, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(LIST_TIMEOUT) });
     if (!response.ok) throw new Error(`${at} 回答 ${response.status}`);
     const body = await response.json();
-    return (Array.isArray(body?.data) ? body.data : []).filter(model => typeof model?.id === 'string' && model.id);
+    // Only a list replaces the one kept: an answer of another shape is the service not answering.
+    if (!Array.isArray(body?.data)) throw new Error(`${at} 的回答不是模型列表`);
+    return body.data.filter(model => typeof model?.id === 'string' && model.id);
   }, state, log);
   return listed.map(model => ({
     id: `${ref}/${model.id}`, model: model.id, displayName: model.id, description: '', hidden: false, isDefault: false,

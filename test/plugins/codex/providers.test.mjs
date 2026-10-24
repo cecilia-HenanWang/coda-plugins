@@ -41,6 +41,7 @@ test('its models are listed as Codex\'s model list has them, named by the model,
     codaService: 'magpie/responses', codaGroup: 'Magpie · OpenAI Responses' }]);
   await serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com/v1', key: 'sk' }, fetcher);
   assert.deepEqual(asked, [['http://127.0.0.1:3425/v1/models', {}], ['https://example.com/v1/models', { Authorization: 'Bearer sk' }]]);
+  await assert.rejects(serviceModels({ ref: 'x/y', title: 'X', url: 'https://example.com/v1' }, async () => Response.json({ error: { message: 'upstream' } })), /不是模型列表/);
   // Listed once a process; one that cannot list now adds none.
   const services = new ServiceModels([{ ref: 'x/y', title: 'X', url: 'http://127.0.0.1:1' }]);
   assert.deepEqual(await services.list(), []);
@@ -51,9 +52,15 @@ test('with the plugin\'s state directory, a service that cannot list now lists a
   const state = mkdtempSync(join(tmpdir(), 'coda-codex-state-'));
   t.after(() => rmSync(state, { recursive: true, force: true }));
   const service = { ref: 'space/s-magpie', title: 'macmini · Magpie · OpenAI Responses', url: 'http://127.0.0.1:1' };
-  await new ServiceModels([service], async () => Response.json({ data: [{ id: 'fake/alpha' }] }), state).list();
-  assert.deepEqual((await new ServiceModels([service], fetch, state).list()).map(m => [m.id, m.codaGroup]),
-    [['space/s-magpie/fake/alpha', 'macmini · Magpie · OpenAI Responses']]);
+  const listed = async fetcher => (await new ServiceModels([service], fetcher, state).list()).map(m => [m.id, m.codaGroup]);
+  const alpha = [['space/s-magpie/fake/alpha', 'macmini · Magpie · OpenAI Responses']];
+  assert.deepEqual(await listed(async () => Response.json({ data: [{ id: 'fake/alpha' }] })), alpha);
+  // An answer that is not a list is the service not answering: what it last listed stays, for a failure after it too.
+  assert.deepEqual(await listed(async () => Response.json({ error: { message: 'upstream unavailable' } })), alpha);
+  assert.deepEqual(await listed(fetch), alpha);
+  // A list, an empty one too, replaces it.
+  assert.deepEqual(await listed(async () => Response.json({ data: [] })), []);
+  assert.deepEqual(await listed(fetch), []);
 });
 
 test('several services: their models a group each after Codex\'s own, in the order chosen; a turn on one\'s model moves the session to that one', async () => {
