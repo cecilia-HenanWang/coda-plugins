@@ -3,7 +3,8 @@
 // its input. What Claude says, its tools and their results, its settings, its title and its usage become session updates;
 // what it keeps going beside a turn, waits (waits.mjs); what it asks, permission requests and forms, withdrawn as the SDK
 // withdraws them. A turn Claude begins on its own is told by what it handles. The plan windows it reports go to the file
-// the plugin's「Claude」panel reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session.
+// the plugin's「Claude」panel reads (limits.json in CODA_PLUGIN_STATE, limits.mjs), not to Coda's session. Chosen, a session
+// that is to go on later is compacted before its cache expires, as the plugin's lifecycle process asks (compaction.mjs).
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
@@ -18,6 +19,7 @@ import { MODEL_EFFORT, MODES, claudeModels, configOptions, reportedModel } from 
 import { permissionRequest } from './permissions.mjs';
 import { elicitationForm, questionForm } from './questions.mjs';
 import { ClaudeWaits } from './waits.mjs';
+import { CacheUse } from './compaction.mjs';
 
 // The Claude Agent SDK this entry runs, as the handshake's `agentInfo` names it (Coda's protocol「Agent 版本」).
 const SDK = (() => {
@@ -37,6 +39,13 @@ export function sessionInstructions(systemPrompt) {
 const text = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text).join('\n') : '';
 const interrupted = m => ['interrupt', 'cancelled'].includes(m.stop_reason) || ['aborted_streaming', 'aborted_tools'].includes(m.terminal_reason);
 const errorText = m => (m.errors?.length ? m.errors : [m.result || m.subtype]).join('\n');
+// The inputs a result names as taken in by its turn.
+const takenIn = m => m.user_message_uuids ?? (m.user_message_uuid ? [m.user_message_uuid] : []);
+// What a turn of the main thread says of itself in conversation: what Claude says, its tools' results, what it was woken by.
+// A compaction says none of it, nor does a subagent going on beside it, so that while one goes only these tell that a turn of
+// Claude's own has begun.
+const conversing = m => !m.parent_tool_use_id && (['assistant', 'stream_event'].includes(m.type)
+  || (m.type === 'user' && (!!m.origin || (Array.isArray(m.message?.content) && m.message.content.some(block => block?.type === 'tool_result')))));
 const failure = (message, code = -32603) => new RequestError(code, message);
 const denied = { behavior: 'deny', message: 'Coda 没有在请求结束前给出审批' };
 // A child session's output that comes before its task, kept until the task names that session: all of it, since what streamed
@@ -60,8 +69,9 @@ class InputStream {
 }
 
 export class ClaudeSession {
-  // `env`: what the SDK's process is started with; `onEnded`: the query ended without being closed.
-  constructor({ sdk, env = process.env, environment = sdkEnvironment, initializationTimeoutMs = 60_000, onEnded = () => {} }) {
+  // `env`: what the SDK's process is started with; `onEnded`: the query ended without being closed; `now`: the clock what is
+  // told of the main thread's cache is read by.
+  constructor({ sdk, env = process.env, environment = sdkEnvironment, initializationTimeoutMs = 60_000, onEnded = () => {}, now }) {
     Object.assign(this, { sdk, env, environment, initializationTimeoutMs, onEnded });
     this.phase = 'new'; this.input = new InputStream(); this.prompts = new Map(); this.withdrawals = new Set();
     // The messages sent into the prompt's turn not yet taken (steer), the prompt whose own turn ended before they were, how
@@ -74,11 +84,15 @@ export class ClaudeSession {
     this.streams = new Map(); this.streamed = new Map(); this.tools = new Set(); this.children = new Set(); this.early = new Map(); this.compaction = null;
     this.waits = new ClaudeWaits({ say: (params, sessionId = this.sessionId) => this.notify('_coda/wait', { sessionId, ...params }),
       going: () => this.prompts.size > 0 || this.waits.handling, registered: sessionId => this.registered(sessionId) });
+    // What is told of the main thread's cache (compaction.mjs); while a compaction Coda asked for goes, its input and answer; and
+    // what the native turn going said of compacting (its boundary, its failure, its command's output), the compaction's once
+    // that turn's result names its input.
+    this.cacheUse = new CacheUse({ now }); this.compacting = null; this.turnCompaction = {};
   }
   connect(stream) {
     this.connection = agent({ name: 'coda-claude' })
       .onRequest('initialize', () => ({ protocolVersion: PROTOCOL_VERSION, agentInfo: SDK ? { name: 'claude-agent-sdk', version: SDK } : { name: 'coda-claude', version: '1' },
-        agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {} } } },
+        agentCapabilities: { loadSession: true, sessionCapabilities: { additionalDirectories: {}, systemPrompt: {} }, _meta: { coda: { waits: {}, compact: {} } } },
         _meta: { steering: { supported: true } } }))
       // The SDK's own reading of these drops what its schema does not name, `systemPrompt` among them: they are read as sent.
       .onRequest('session/new', params => params ?? {}, ({ params }) => this.open(params))
@@ -93,9 +107,12 @@ export class ClaudeSession {
         if (this.rerouting) this.cancelling = true;
         // Messages sent into the turn and not taken yet (steer) are stopped with it: else Claude Code would run them after.
         if (this.steering.size) this.dropRest({ stopReason: 'cancelled' });
+        // Prompts waiting behind a compaction Coda asked for have not begun: they are dropped with it, else they would run after.
+        else if (this.compacting && this.prompts.size) this.dropQueued();
         else void this.query?.interrupt().catch(() => {});
       })
       .onRequest('_coda/wait/stop', params => params, ({ params }) => this.stopWait(params))
+      .onRequest('_coda/session/compact', params => params ?? {}, ({ params }) => this.compact(params))
       .connect(stream);
     this.client = this.connection.client;
     return this.connection;
@@ -186,7 +203,9 @@ export class ClaudeSession {
     const entry = this.served(model);
     const settings = { ...this.launch.settings, ...(this.current.effort ? { effortLevel: this.current.effort } : {}),
       ...(entry ? serviceSettings(this.services.find(service => service.ref === entry.service), entry.model) : {}) };
-    this.serviceModel = entry ? model : null;
+    this.serviceModel = entry ? model : null; this.cacheUse.restarted();
+    // A compaction in the query moved off ends with it.
+    this.compacting?.answer({ compacted: false, reason: '会话换到另一个模型，压缩没有做完' }); this.compacting = null;
     this.query = this.sdk.query({ prompt: this.input, options: { ...this.launch, ...at, settings,
       ...(this.phase === 'running' ? { permissionMode: this.current.mode, model: entry ? entry.model : this.current.model } : {}) } });
     this.pump = this.consume(this.query);
@@ -266,7 +285,7 @@ export class ClaudeSession {
   // A result names at most 64 of the messages it took in (the SDK's user_message_uuids): few enough go in at a time that each is
   // named; one more is Coda's to send as the next turn, as it is with no turn going.
   steer({ prompt }) {
-    if (this.phase !== 'running' || !this.prompts.size || this.ending) return { outcome: 'promptRequired', reason: 'noRunningTurn' };
+    if (this.phase !== 'running' || !this.prompts.size || this.ending || this.compacting) return { outcome: 'promptRequired', reason: 'noRunningTurn' };
     if (this.steering.size >= STEERING_LIMIT) return { outcome: 'promptRequired', reason: 'tooManyPending' };
     const id = randomUUID(), content = prompt.filter(block => block.type === 'text').map(block => block.text).join('\n');
     this.steering.add(id);
@@ -281,8 +300,25 @@ export class ClaudeSession {
     this.ending = outcome;
     void this.query?.interrupt({ cancelQueued: true }).then(receipt => {
       for (const id of receipt?.cancelled ?? []) this.steering.delete(id);
+      this.dropped(receipt?.cancelled);
       if (this.held && !this.turning) this.settle(this.held, this.ending);
     }, () => {});
+  }
+  // The turn going stopped, and what was given behind it dropped (cancelQueued): the prompts among that answered as stopped.
+  dropQueued() {
+    void this.query?.interrupt({ cancelQueued: true }).then(receipt => {
+      for (const id of receipt?.cancelled ?? []) {
+        const prompt = this.prompts.get(id);
+        if (prompt) { this.prompts.delete(id); prompt.resolve({ stopReason: 'cancelled' }); }
+      }
+      this.dropped(receipt?.cancelled);
+    }, () => {});
+  }
+  // A compaction Coda asked for among the inputs Claude Code dropped before taking them: no turn of it will answer, so it is
+  // answered now.
+  dropped(ids = []) {
+    if (!this.compacting || !ids.includes(this.compacting.id)) return;
+    this.compacting.answer({ compacted: false, reason: '压缩被取消' }); this.compacting = null;
   }
   // The prompt answered: as it ended, and with nothing of it left to take.
   settle(id, { stopReason, failure: error }) {
@@ -292,6 +328,18 @@ export class ClaudeSession {
     // What ended before this turn ended was taken in by it.
     this.waits.settled();
     if (error) prompt.reject(error); else prompt.resolve({ stopReason });
+  }
+  // Coda asks the session compacted (the plugin's lifecycle process decides when, compaction.mjs): it compacts as /compact
+  // would, in a turn that is neither Coda's nor Claude's own (result), and answers with the context before and after. One not
+  // running, or in a turn, cannot now.
+  compact({ sessionId }) {
+    if (sessionId !== this.sessionId) throw failure('没有这个会话', -32602);
+    if (this.phase !== 'running' || this.rerouting) return { compacted: false, reason: 'Claude 会话未在运行' };
+    if (this.prompts.size || this.turning || this.opening || this.compacting || this.waits.handling || this.waits.unclaimed) return { compacted: false, reason: '会话正在进行一轮' };
+    return new Promise(answer => {
+      this.compacting = { id: randomUUID(), answer, before: this.cacheUse.context ?? undefined };
+      this.input.push({ type: 'user', uuid: this.compacting.id, session_id: this.sessionId, parent_tool_use_id: null, message: { role: 'user', content: '/compact' } });
+    });
   }
   // What is said to the session goes into what its title is made of.
   heard(content) {
@@ -307,7 +355,8 @@ export class ClaudeSession {
 
   permission(toolName, input, { signal, ...context }) {
     if (!['starting', 'running'].includes(this.phase)) return Promise.resolve(denied);
-    this.begin();
+    // A subagent's request opens no turn of Claude's own while a compaction Coda asked for goes (receive).
+    if (!this.compacting || !context.agentID) this.begin();
     // A subagent's request is in its session.
     const sessionId = this.waits.childSession(context.agentID) ?? this.sessionId;
     if (sessionId === this.sessionId) this.waits.claim();
@@ -349,6 +398,7 @@ export class ClaudeSession {
     if (this.phase === 'ended') return;
     const intended = this.phase === 'closing';
     this.phase = 'ended'; this.input.close(); this.steering.clear(); this.held = null; this.ending = null;
+    this.compacting?.answer({ compacted: false, reason: error?.message ?? 'Claude 会话已结束' }); this.compacting = null;
     for (const withdrawn of this.withdrawals) withdrawn.abort();
     for (const { reject } of this.prompts.values()) reject(failure(error?.message ?? 'Claude 会话已结束'));
     this.prompts.clear();
@@ -357,7 +407,10 @@ export class ClaudeSession {
   }
   receive(m) {
     const parent = m.parent_tool_use_id ?? null;
-    this.begin(m.type === 'user' && !parent && m.origin ? { origin: m.origin, text: text(m.message?.content) } : {});
+    // While a compaction Coda asked for goes, a turn opened then (its init) is Claude's own once it converses, or ends with a
+    // result not the compaction's; the compaction's once its result names the compaction's input (result).
+    const compacting = this.compacting && (m.type === 'result' ? takenIn(m).includes(this.compacting.id) : !conversing(m));
+    if (!compacting) this.begin(m.type === 'user' && !parent && m.origin ? { origin: m.origin, text: text(m.message?.content) } : {});
     switch (m.type) {
       case 'system': return this.system(m);
       case 'stream_event': return this.stream(m.event, parent);
@@ -386,7 +439,8 @@ export class ClaudeSession {
           this.title.append(this.titleContext ?? ''); this.titleContext = '';
           void this.title.refresh();
         }
-        // Every native turn opens with an init. One no prompt of Coda's began, and no handling already holds, is Claude's own.
+        // Every native turn opens with an init. One no prompt of Coda's began, and no handling already holds, is Claude's own,
+        // unless it is a compaction Coda asked for (receive, result).
         if (!this.prompts.size && !this.waits.handling) this.opening = m;
         else this.announce(m);
         return;
@@ -405,13 +459,18 @@ export class ClaudeSession {
             status: this.compaction.active ? 'in_progress' : m.compact_result === 'failed' ? 'failed' : 'completed', error: m.compact_error ?? null });
           if (!this.compaction.active) this.compaction = null;
         }
+        if (m.subtype === 'compact_boundary') {
+          this.cacheUse.compacted(m.compact_metadata?.post_tokens);
+          Object.assign(this.turnCompaction, { before: m.compact_metadata?.pre_tokens, after: m.compact_metadata?.post_tokens, done: true });
+        }
+        if (m.compact_result === 'failed') this.turnCompaction.error = m.compact_error || '压缩失败';
         return;
       }
-      case 'local_command_output': {
-        const said = m.content ?? m.stdout;
-        if (typeof said === 'string') this.update(this.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: m.uuid, content: { type: 'text', text: said } });
-        return;
-      }
+      case 'local_command_output':
+        // While a compaction Coda asked for goes, a command's output waits for its turn's result: the compaction's says why it
+        // did not compact, and is not said; any other turn's is said then (result).
+        if (this.compacting) { (this.turnCompaction.outputs ??= []).push(m); return; }
+        return this.commandOutput(m);
       case 'session_state_changed': if (m.state === 'idle') this.waits.settled(); return;
       case 'task_started': return this.waits.started(m, { start: true });
       case 'task_updated': {
@@ -422,6 +481,10 @@ export class ClaudeSession {
       case 'task_notification': return this.waits.ended(m.task_id, m.status, { outputFile: m.output_file });
       case 'background_tasks_changed': if (Array.isArray(m.tasks)) this.waits.snapshot(m.tasks);
     }
+  }
+  commandOutput(m) {
+    const said = m.content ?? m.stdout;
+    if (typeof said === 'string') this.update(this.sessionId, { sessionUpdate: 'agent_message_chunk', messageId: m.uuid, content: { type: 'text', text: said } });
   }
   // A turn Claude began on its own is told by what it handles, before anything said or asked in it; its opening message, when
   // that comes first, may say what that is.
@@ -454,7 +517,7 @@ export class ClaudeSession {
       this.streamed.set(event.message.id, new Map());
       // Kept for the messages streaming now; a message whose complete form came long ago is not.
       if (this.streamed.size > 64) this.streamed.delete(this.streamed.keys().next().value);
-      if (parent) this.waits.model(parent, event.message.model);
+      if (parent) this.waits.model(parent, event.message.model); else this.cacheUse.requested();
       return;
     }
     const apiId = this.streams.get(owner), blocks = this.streamed.get(apiId);
@@ -477,6 +540,9 @@ export class ClaudeSession {
     if (!parent) {
       this.turnError = m.error ? { error: m.error, message: text(m.message?.content) } : null;
       if (m.error) return;
+      // One not streamed was a request too.
+      if (!blocks) this.cacheUse.requested();
+      this.cacheUse.used(m.message?.usage);
     }
     for (const block of m.message?.content ?? []) {
       if (block.type === 'tool_use') {
@@ -505,10 +571,30 @@ export class ClaudeSession {
   }
   result(m) {
     const usage = m.usage ?? {}, windows = Object.values(m.modelUsage ?? {});
+    const ids = takenIn(m);
+    // The compaction Coda asked for (compact) is the turn that names its input. Any other is the session's own, whose cache runs
+    // from its last request. Coda is told what is known of that cache (compaction.mjs).
+    const compaction = this.compacting && ids.includes(this.compacting.id) ? this.compacting : null;
+    // What the turn said of compacting is this turn's: the compaction's answer, or else said now, its output held back.
+    const turn = this.turnCompaction;
+    this.turnCompaction = {};
+    if (!compaction) { this.cacheUse.ended(); for (const output of turn.outputs ?? []) this.commandOutput(output); }
+    const told = this.cacheUse.told();
     this.update(this.sessionId, { sessionUpdate: 'usage_update', used: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-      size: Math.max(0, ...windows.map(w => w.contextWindow ?? 0)), cost: { amount: m.total_cost_usd ?? 0, currency: 'USD' } });
+      size: Math.max(0, ...windows.map(w => w.contextWindow ?? 0)), cost: { amount: m.total_cost_usd ?? 0, currency: 'USD' },
+      ...(Object.keys(told).length ? { _meta: { coda: told } } : {}) });
     this.turning = false;
-    const ids = m.user_message_uuids ?? (m.user_message_uuid ? [m.user_message_uuid] : []);
+    // The compaction's: Coda is answered, and nothing is taken up.
+    if (compaction) {
+      const { answer } = compaction, { done, error, outputs = [] } = turn, before = turn.before ?? compaction.before, after = turn.after;
+      const said = outputs.map(output => output.content ?? output.stdout).filter(text => typeof text === 'string').join('\n').trim();
+      // Its init, which opened no turn of Claude's own.
+      this.compacting = null; this.turnError = null; this.turnLimits = null; this.opening = null;
+      const failed = interrupted(m) ? '压缩被停止' : error ?? (m.is_error || m.subtype !== 'success' ? errorText(m) : done ? null
+        : said ? said.slice(0, 1000) : '没有压缩');
+      answer(failed ? { compacted: false, reason: failed } : { compacted: true, ...(Number.isFinite(before) ? { before } : {}), ...(Number.isFinite(after) ? { after } : {}) });
+      return;
+    }
     // A message sent into the prompt's turn (steer) is the prompt's, and so is the turn Claude Code runs it in when the prompt's
     // own ended before taking it: the prompt is answered once none is left to take. Stopped or failed with some not taken
     // yet, it ends once those are dropped (dropRest); one ending already ends as it was to.

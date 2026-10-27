@@ -174,6 +174,31 @@ Claude、Codex 与 OpenCode 各有一项设置「模型服务」（`claude.model
   覆盖三种接口的请求、服务与原生模型切换、进程重启后恢复，服务模型的变量模板、用户 JSONC 和 Provider 对象模板配置，以及主会话与子 Agent 里长短两种 `Retry-After`；
   原生子会话另覆盖过程与工具、审批归属、后台完成、独立停止和嵌套父子关系。模型服务全由本地 HTTP fixture 提供。
 
+### Claude 缓存过期前压缩
+
+Claude 的设置「缓存过期前压缩」（`claude.idleCompaction`，默认关）：会话停下后还要接着用时，在主线程的一小时提示词缓存过期前压缩一次上下文，
+同 `/compact`。摘要趁缓存还热时生成，回来接着做的那一轮只需缓存摘要，不必按原价重新缓存整段对话。判断全在插件的流程里，Agent 只报数据、只执行。
+
+- **流程**：插件自带的生命周期流程「Claude 缓存过期前压缩」（`.coda/workflows/claude-compaction.bpmn`）以 `coda:agents="claude-sdk"`
+  只跟随 Claude SDK 的会话，一个会话一条运行，平时不占内存，只在会话事实变化或自己的计时到点时被唤醒；做了什么、为什么没做，都记在运行里。
+  它只读会话事实、只请 Agent 压缩，不改会话自己的状态：不登记活动、不改等待、不发布阶段。
+- **条件**：设置打开；进程在、没在跑一轮；还要接着用（置顶了，或在等你、等 Coda 跑的流程与子会话、等 Agent 自己的后台命令、子 Agent 与定时：
+  事实 `pinned`、`input`、`waitsForSystem`、`background`、`scheduled`）；缓存是一小时的、上下文不少于 15 万 token；最后一次请求之后没有压缩过
+  （最近一件事已经是压缩就不再压，不管是谁压的），也还没为这次请求请过。照 Claude Code 2.1.296 自带的空闲压缩
+  （启不启用由 Anthropic 的远程开关定，默认关，设置 `idleCompaction` 只能关不能开）：在缓存寿命的 9/10，即最后一次请求后 54 分钟，执行动作
+  `compact-session`；期间事实变了就重看，最后一次请求没变时期限不变；到点已过 58 分钟（机器睡过、后端停过，缓存多半已失效）就不压。
+  Claude Code 那边还看额度是否接近上限，Coda 看不到额度，这里不看。
+- **Agent 报什么**：每轮结束时，入口在 `usage_update` 的 `_meta.coda` 里带上主线程缓存的情况，Coda 原样作为会话事实 `usage`：
+  `lastRequestAt`（最后一次请求模型的时刻，缓存最后被用到；压缩那一轮不算）、`contextTokens`（那次请求带的上下文 token 数）、
+  `cacheTtl`（`PT1H` 或 `PT5M`，从回复写缓存的明细看出）、`compactedAt`（最近一次压缩，Claude Code 自动的、`/compact` 的、Coda 请的都算）。
+  `usage_update` 的 `used` 是这一轮所有请求加起来的，不是上下文大小。
+- **压缩那一轮**：入口在 `initialize` 的 `agentCapabilities._meta.coda` 里声明 `compact: {}`，收到 `_coda/session/compact`（`{ sessionId }`，
+  两轮之间也可以发）就往 SDK 的输入送一条 `/compact`。这一轮不归 Coda 的哪个 `session/prompt`，也不登记活动；Coda 只看到 `compaction_update`，
+  命令输出不转成回复。期间 Coda 发来的一轮排在它后面照常回复，插话回 `promptRequired`。压完回答 `{ compacted: true, before, after }`（前后的
+  上下文 token 数）；会话没在运行、正在跑一轮、压缩失败或没压成，回 `{ compacted: false, reason }`。
+- 会话事实 `pinned`、`usage`，动作 `compact-session` 与流程属性 `coda:agents` 由 Coda 提供（见 Coda 仓 docs/workflows.md「生命周期流程」与
+  docs/agent-protocol.md），Coda 还没有这些时，这条流程读不进来，不会运行。
+
 ### Grok 审批模式
 
 Grok 插件通过 ACP 提供原来的「自动审批」「全部放行」两个选项；新会话未选择时沿用运行机配置。
