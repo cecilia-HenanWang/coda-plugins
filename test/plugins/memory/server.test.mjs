@@ -22,7 +22,7 @@ async function connected(context, data) {
 test('stdio initialize/tools/list/tools/call use session-local opt-in, preserve errors and reopen with no selection', async context => {
   const data = fixture(context), first = await connected(context, data), second = await connected(context, data);
   const listed = await first.listTools();
-  assert.deepEqual(listed.tools.map(tool => tool.name), ['memory_sources', 'memory_select', 'memory_search', 'memory_read']);
+  assert.deepEqual(listed.tools.map(tool => tool.name), ['memory_sources', 'memory_select', 'memory_files', 'memory_search', 'memory_read']);
   assert.ok(listed.tools.every(tool => tool.annotations.readOnlyHint));
   const call = (client, name, args = {}) => client.callTool({ name, arguments: args });
   assert.equal((await call(first, 'memory_search', { query: 'pnpm' })).isError, true);
@@ -45,7 +45,7 @@ test('stdio initialize/tools/list/tools/call use session-local opt-in, preserve 
   assert.equal((await call(reopened, 'memory_search', { query: 'pnpm' })).isError, true);
 });
 
-test('stdio discovers native sources without settings and loads only after explicit source and project confirmation', async context => {
+test('stdio discovers sources without settings, permits explicit selection or all and lists every selected file', async context => {
   const data = fixture(context), native = join(data.home, '.claude', 'projects', 'unconfirmed-project', 'memory');
   mkdirSync(native, { recursive: true });
   writeFileSync(join(native, 'MEMORY.md'), 'INDEX_SHOULD_NOT_APPEAR_DURING_DISCOVERY');
@@ -58,8 +58,15 @@ test('stdio discovers native sources without settings and loads only after expli
   assert.equal(sources.sources.length, 1);
   assert.deepEqual(sources.selected, []);
   const args = { runtime: 'codex', project: data.project, ids: [sources.sources[0].id] };
-  assert.equal((await call('memory_select', args)).isError, true);
-  const selected = await call('memory_select', { ...args, confirmProject: true });
+  const selected = await call('memory_select', args);
   assert.ok(!selected.isError);
   assert.match(JSON.parse(selected.content[0].text).previews[0].text, /INDEX_SHOULD_NOT_APPEAR/);
+  assert.equal(JSON.parse(selected.content[0].text).previews[0].project, null);
+  const all = await call('memory_select', { runtime: 'claude-sdk', project: data.otherProject, all: true });
+  assert.ok(!all.isError);
+  assert.ok(JSON.parse(all.content[0].text).warnings.length);
+  const files = await call('memory_files', { offset: 0, limit: 1 });
+  assert.equal(JSON.parse(files.content[0].text).total, 1);
+  assert.equal((await call('memory_read', { id: JSON.parse(files.content[0].text).files[0].id })).isError, undefined);
+  assert.equal((await call('memory_select', { ...args, all: true })).isError, true);
 });

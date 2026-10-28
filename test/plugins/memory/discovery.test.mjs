@@ -75,28 +75,46 @@ test('configured mappings retain their names and override the same automatically
   assert.equal(found.sources.find(source => source.id === 'confirmed').projectMapping, 'user');
   const selected = memory.select({ runtime: 'codex', project: data.project, ids: ['confirmed'] });
   assert.equal(selected.count, 2);
-  assert.throws(() => memory.select({ runtime: 'codex', project: data.otherProject, ids: ['confirmed'], confirmProject: true }), /不属于当前项目/);
+  const crossProject = memory.select({ runtime: 'codex', project: data.otherProject, ids: ['confirmed'] });
+  assert.equal(crossProject.previews[0].project, data.project);
 });
 
-test('discovered Claude sources require project confirmation per session and Codex requires global acceptance', context => {
+test('explicit selection loads discovered sources without inventing project ownership or excluding native sources', context => {
   const data = fixture(context);
   nativeMemories(data);
   const options = { home: data.home, env: {} }, memory = new Memory({}, data.state, options);
   const found = memory.list(), claude = found.sources.find(source => source.runtime === 'claude'), codex = found.sources.find(source => source.runtime === 'codex');
-  assert.throws(() => memory.select({ runtime: 'codex', project: data.project, ids: [claude.id] }), /confirmProject/);
-  assert.throws(() => memory.select({ runtime: 'claude-sdk', project: data.project, ids: [claude.id], confirmProject: true }), /当前 Agent/);
-  const chosen = memory.select({ runtime: 'codex', project: data.project, ids: [claude.id], confirmProject: true });
-  assert.equal(chosen.previews[0].projectMapping, 'session-confirmed');
+  const chosen = memory.select({ runtime: 'codex', project: data.project, ids: [claude.id] });
+  assert.equal(chosen.previews[0].projectMapping, 'unconfirmed');
+  assert.equal(chosen.previews[0].project, null);
   assert.match(chosen.previews[0].text, /NATIVE_INDEX/);
   const hit = memory.search({ query: 'NATIVE_TOPIC' }).matches[0];
   assert.match(memory.read({ id: hit.id }).text, /NATIVE_TOPIC/);
   assert.equal(memory.list().sources.find(source => source.id === claude.id).project, null);
   const reopened = new Memory({}, data.state, options);
-  assert.throws(() => reopened.select({ runtime: 'codex', project: data.project, ids: [claude.id] }), /confirmProject/);
-  assert.throws(() => memory.select({ runtime: 'opencode', project: data.project, ids: [codex.id] }), /includeGlobal/);
-  assert.equal(memory.select({ runtime: 'opencode', project: data.project, ids: [codex.id], includeGlobal: true }).count, 0);
-  assert.equal(memory.selected[0].projectMapping, 'session-global');
+  assert.throws(() => reopened.read({ id: hit.id }), /尚未选择/);
+  assert.equal(memory.select({ runtime: 'claude-sdk', project: data.otherProject, all: true }).selectedSources.length, 2);
+  assert.equal(memory.selected.find(source => source.id === claude.id).project, null);
+  assert.equal(memory.select({ runtime: 'codex', project: data.project, ids: [codex.id] }).count, 0);
+  assert.equal(memory.selected[0].projectMapping, 'unconfirmed');
   assert.throws(() => memory.select({ runtime: 'codex', project: data.project, ids: [claude.id], confirmProject: 'yes' }), /布尔值/);
+});
+
+test('selecting all reports discovery failures and does not automatically select future source directories', context => {
+  const data = fixture(context), native = nativeMemories(data);
+  const broken = join(data.home, '.claude', 'projects', 'broken', 'memory');
+  mkdirSync(join(broken, '..'), { recursive: true });
+  symlinkSync(native.claude, broken);
+  const memory = new Memory({}, data.state, { home: data.home, env: {} });
+  const selected = memory.select({ runtime: 'codex', project: data.project, all: true });
+  assert.equal(selected.discoveryErrors.length, 1);
+  assert.equal(selected.selectedSources.length, 2);
+  const later = join(data.home, '.claude', 'projects', 'later', 'memory');
+  mkdirSync(later, { recursive: true });
+  writeFileSync(join(later, 'MEMORY.md'), 'NOT_SELECTED_LATER_SOURCE');
+  assert.equal(memory.list().sources.length, 3);
+  assert.equal(memory.files().total, 2);
+  assert.equal(memory.search({ query: 'NOT_SELECTED_LATER_SOURCE' }).matches.length, 0);
 });
 
 test('source IDs stay stable while new or removed directories are reflected on the next listing', context => {

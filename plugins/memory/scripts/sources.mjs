@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const MAX_FILE_BYTES = 256 * 1024;
 const identifier = value => createHash('sha256').update(value).digest('hex');
@@ -14,8 +14,9 @@ export function sources(settings) {
   if (!configured || typeof configured !== 'object' || Array.isArray(configured)) throw new Error('memory.sources 必须是来源表格');
   return Object.entries(configured).map(([id, value]) => {
     if (!value || !['claude', 'codex'].includes(value.runtime)) throw new Error(`来源 ${id} 的 runtime 必须是 claude 或 codex`);
-    const project = directory(value.project), path = directory(value.path);
-    return { id, runtime: value.runtime, project, projectMapping: 'user', scope: value.runtime === 'codex' ? 'global' : 'project', path };
+    if (value.project && (typeof value.project !== 'string' || !isAbsolute(value.project))) throw new Error(`来源 ${id} 的 project 必须是绝对路径或留空`);
+    const project = value.project ? resolve(value.project) : null, path = directory(value.path);
+    return { id, runtime: value.runtime, project, projectMapping: project ? 'user' : 'unconfirmed', scope: value.runtime === 'codex' ? 'global' : 'project', path };
   });
 }
 

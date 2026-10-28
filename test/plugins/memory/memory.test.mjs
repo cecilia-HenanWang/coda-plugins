@@ -22,21 +22,67 @@ test('native adapters only index allowed Markdown, label runtime/project/scope, 
   assert.ok(!cache.includes('credentials.json') && !cache.includes('raw_memories.md') && !cache.includes('conversation.md'));
 });
 
-test('selection is off by default, excludes the current runtime, requires matching projects and explicit global acceptance', context => {
+test('selection is off by default but explicit selection allows other projects, unknown scopes and the current runtime', context => {
   const data = fixture(context);
   assert.throws(() => data.memory.search({ query: 'pnpm' }), /尚未选择/);
-  assert.throws(() => data.memory.select({ runtime: 'claude-sdk', project: data.project, ids: ['claude'] }), /当前 Agent/);
-  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project, ids: ['codex'] }), /当前 Agent/);
-  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.otherProject, ids: ['claude'] }), /不属于当前项目/);
-  assert.throws(() => data.memory.select({ runtime: 'claude', project: data.project, ids: ['codex'] }), /includeGlobal/);
+  assert.throws(() => data.memory.files(), /尚未选择/);
+  const own = data.memory.select({ runtime: 'claude-sdk', project: data.otherProject, ids: ['claude'] });
+  assert.equal(own.currentRuntime, 'claude');
+  assert.match(own.warnings[0], /重复/);
+  assert.equal(own.index[0].project, data.project);
+  assert.equal(own.project, data.otherProject);
+  const global = data.memory.select({ runtime: 'codex', project: data.otherProject, ids: ['codex'], includeGlobal: false, confirmProject: false });
+  assert.ok(global.index.every(item => item.scope === 'global' && item.project === data.project));
   assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project, ids: ['unknown'] }), /未配置/);
   assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project, ids: ['claude', 'claude'] }), /不重复/);
   data.memory.select({ runtime: 'codex', project: data.project, ids: ['claude'] });
   assert.equal(data.memory.search({ query: 'pnpm' }).matches.length, 1);
-  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.otherProject, ids: ['claude'] }));
+  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project, ids: ['unknown'] }));
   assert.throws(() => data.memory.search({ query: 'pnpm' }), /尚未选择/);
   data.memory.select({ runtime: 'codex', project: data.project, ids: [] });
   assert.throws(() => data.memory.search({ query: 'pnpm' }), /尚未选择/);
+});
+
+test('all sources and every file beyond the initial preview can be explicitly selected, listed and read', context => {
+  const data = fixture(context);
+  for (let index = 0; index < 35; index++) writeFileSync(join(data.claude, `topic-${index}.md`), `CROSS_PROJECT_TOPIC_${index}`);
+  const selected = data.memory.select({ runtime: 'codex', project: data.otherProject, all: true });
+  assert.equal(selected.selectedSources.length, 2);
+  assert.equal(selected.index.length, 20);
+  assert.equal(selected.count, 41);
+  assert.equal(selected.nextOffset, 20);
+  const files = [];
+  let offset = 0;
+  do {
+    const page = data.memory.files({ offset, limit: 7 });
+    assert.equal(page.total, 41);
+    assert.ok(page.files.every(file => !Object.hasOwn(file, 'text')));
+    files.push(...page.files);
+    offset = page.nextOffset;
+  } while (offset !== null);
+  assert.equal(new Set(files.map(file => file.id)).size, 41);
+  assert.ok(files.every(file => file.project === data.project));
+  for (const file of files) assert.ok(data.memory.read({ id: file.id }).text.length);
+  assert.deepEqual(data.memory.files({ offset: 100 }).files, []);
+  assert.throws(() => data.memory.files({ offset: -1 }), /offset/);
+  assert.throws(() => data.memory.files({ limit: 101 }), /limit/);
+  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project, ids: [], all: true }), /不能同时/);
+  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project }), /ids/);
+  assert.throws(() => data.memory.select({ runtime: 'codex', project: data.project, all: 'yes' }), /布尔值/);
+  data.memory.select({ runtime: 'codex', project: data.project, ids: [] });
+  assert.throws(() => data.memory.files(), /尚未选择/);
+});
+
+test('source project labels are optional and do not require an existing project checkout', context => {
+  const data = fixture(context);
+  const configured = sources({ 'memory.sources': {
+    optional: { runtime: 'claude', path: data.claude },
+    archived: { runtime: 'codex', project: join(data.root, 'removed-project'), path: data.codex }
+  } });
+  assert.equal(configured[0].project, null);
+  assert.equal(configured[0].projectMapping, 'unconfirmed');
+  assert.equal(configured[1].project, join(data.root, 'removed-project'));
+  assert.throws(() => sources({ 'memory.sources': { bad: { runtime: 'claude', project: 'relative', path: data.claude } } }), /绝对路径/);
 });
 
 test('search refreshes metadata, read returns live original text, and unchanged catalogs are not rewritten', context => {

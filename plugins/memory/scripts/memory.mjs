@@ -36,33 +36,42 @@ export class Memory {
     return { sources: [...configured, ...additional], errors: discovered.errors, selected: this.selected.map(source => source.id) };
   }
 
-  select({ runtime, project, ids, includeGlobal = false, confirmProject = false }) {
+  select({ runtime, project, ids, all = false, includeGlobal = false, confirmProject = false }) {
     this.selected = [];
     if (typeof runtime !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/.test(runtime)) throw new Error('请明确当前 Agent ID，例如 claude-sdk、codex 或 opencode');
     if (runtime === 'claude-sdk') runtime = 'claude';
     if (typeof includeGlobal !== 'boolean') throw new Error('includeGlobal 必须是布尔值');
     if (typeof confirmProject !== 'boolean') throw new Error('confirmProject 必须是布尔值');
+    if (typeof all !== 'boolean') throw new Error('all 必须是布尔值');
     project = directory(project);
-    if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new Error('ids 必须是不重复的来源名数组');
-    const available = ids.length ? this.list().sources : [], chosen = ids.map(id => {
-      const source = available.find(item => item.id === id);
+    if (all && ids !== undefined) throw new Error('ids 与 all: true 不能同时提供');
+    if (!all && (!Array.isArray(ids) || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length)) throw new Error('ids 必须是不重复的来源名数组，或明确使用 all: true');
+    const available = all || ids.length ? this.list() : { sources: [], errors: [] };
+    const chosen = all ? available.sources : ids.map(id => {
+      const source = available.sources.find(item => item.id === id);
       if (!source) throw new Error(`来源 ${id} 未配置或未发现，请先列出来源`);
-      if (source.project && source.project !== project) throw new Error(`来源 ${id} 不属于当前项目`);
-      if (source.runtime === runtime) throw new Error(`来源 ${id} 属于当前 Agent；为避免重复，本插件只接入额外运行时的记忆`);
-      if (source.scope === 'global' && !includeGlobal) throw new Error(`来源 ${id} 是可能包含多个项目的 Codex 全局记忆；需用户明确选择 includeGlobal: true`);
-      if (!source.project && source.scope === 'project' && !confirmProject) throw new Error(`来源 ${id} 的项目归属未确认；需用户确认后传 confirmProject: true`);
-      return source.project ? source : { ...source, project, projectMapping: source.scope === 'global' ? 'session-global' : 'session-confirmed' };
+      return source;
     });
     const entries = chosen.flatMap(source => refresh(this.state, source));
     const previews = nativePreviews(chosen, entries);
     this.selected = chosen;
-    return { notice: NOTICE, currentRuntime: runtime, project, count: entries.length, index: entries.slice(0, 20), hasMore: entries.length > 20,
+    return { notice: NOTICE, currentRuntime: runtime, project, selectedSources: chosen, discoveryErrors: available.errors,
+      warnings: chosen.some(source => source.runtime === runtime) ? ['所选包含当前 Agent 的原生来源，可能与原生加载重复。'] : [],
+      count: entries.length, index: entries.slice(0, 20), hasMore: entries.length > 20, nextOffset: entries.length > 20 ? 20 : null,
       ...previews };
   }
 
   entries() {
     if (!this.selected.length) throw new Error('本会话尚未选择额外记忆；仅用户明确要求时调用 select');
     return this.selected.flatMap(source => refresh(this.state, source));
+  }
+
+  files({ offset = 0, limit = 50 } = {}) {
+    if (!Number.isInteger(offset) || offset < 0) throw new Error('offset 必须是非负整数');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('limit 必须是 1–100 的整数');
+    const entries = this.entries();
+    return { notice: NOTICE, total: entries.length, files: entries.slice(offset, offset + limit),
+      nextOffset: offset + limit < entries.length ? offset + limit : null };
   }
 
   search({ query, limit = 10 }) {
