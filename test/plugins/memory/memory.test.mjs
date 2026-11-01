@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, sym
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { read, scan, sources } from '../../../plugins/memory/scripts/sources.mjs';
+import { Memory } from '../../../plugins/memory/scripts/memory.mjs';
 import { fixture } from './fixture.mjs';
 
 test('native adapters only index allowed Markdown, label runtime/project/scope, and cache metadata without bodies', context => {
@@ -154,4 +155,50 @@ test('oversized files report errors without exposing content or blocking other r
   assert.equal(found.matches.length, 1);
   assert.equal(found.errors.length, 1);
   assert.match(found.errors[0].error, /字节/);
+});
+
+test('the same Coda thread restores selection without reading bodies and another thread remains off', context => {
+  const data = fixture(context), options = { home: data.home, env: {} };
+  const memory = new Memory(data.settings, data.state, options, 'thread-1');
+  memory.select({ runtime: 'codex', project: data.project, ids: ['claude'] });
+  const selectionFile = join(data.state, 'sessions', 'thread-1.json');
+  const saved = readFileSync(selectionFile, 'utf8');
+  assert.ok(!saved.includes('CLAUDE_BODY_UNIQUE') && !saved.includes('参见 topic'));
+  assert.equal(statSync(selectionFile).mode & 0o777, 0o600);
+  const other = new Memory(data.settings, data.state, options, 'thread-2');
+  assert.deepEqual(other.list().selected, []);
+  assert.throws(() => other.files(), /尚未选择/);
+  const resumed = new Memory(data.settings, data.state, options, 'thread-1');
+  assert.deepEqual(resumed.list().selected, ['claude']);
+  writeFileSync(join(data.claude, 'topic.md'), 'RESTORED_LIVE_ORIGINAL');
+  const hit = resumed.search({ query: 'RESTORED_LIVE_ORIGINAL' }).matches[0];
+  assert.match(resumed.read({ id: hit.id }).text, /RESTORED_LIVE_ORIGINAL/);
+  resumed.select({ runtime: 'codex', project: data.otherProject, ids: [] });
+  assert.deepEqual(readdirSync(join(data.state, 'sessions')), []);
+  assert.throws(() => new Memory(data.settings, data.state, options, 'thread-1').files(), /尚未选择/);
+});
+
+test('restoring all keeps the original source paths without selecting later directories or remapped source IDs', context => {
+  const data = fixture(context), options = { home: data.home, env: {} };
+  const memory = new Memory(data.settings, data.state, options, 'thread-1');
+  memory.select({ runtime: 'codex', project: data.project, all: true });
+  const later = join(data.home, '.claude', 'projects', 'later', 'memory');
+  mkdirSync(later, { recursive: true });
+  writeFileSync(join(later, 'MEMORY.md'), 'LATER_UNSELECTED_BODY');
+  const settings = { 'memory.sources': { ...data.settings['memory.sources'], claude: { runtime: 'claude', path: later } } };
+  const resumed = new Memory(settings, data.state, options, 'thread-1');
+  assert.equal(resumed.files().total, 6);
+  assert.equal(resumed.search({ query: 'LATER_UNSELECTED_BODY' }).matches.length, 0);
+  assert.equal(resumed.selected.find(source => source.id === 'claude').path, data.claude);
+  rmSync(data.claude, { recursive: true });
+  assert.throws(() => new Memory(settings, data.state, options, 'thread-1').files(), /ENOENT/);
+});
+
+test('failed selection clears the saved choice and invalid thread IDs cannot name state files', context => {
+  const data = fixture(context), options = { home: data.home, env: {} };
+  const memory = new Memory(data.settings, data.state, options, 'thread-1');
+  memory.select({ runtime: 'codex', project: data.project, ids: ['claude'] });
+  assert.throws(() => memory.select({ runtime: 'codex', project: data.project, ids: ['unknown'] }), /未配置/);
+  assert.throws(() => new Memory(data.settings, data.state, options, 'thread-1').files(), /尚未选择/);
+  assert.throws(() => new Memory(data.settings, data.state, options, '../other'), /会话 ID/);
 });

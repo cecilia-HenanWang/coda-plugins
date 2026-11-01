@@ -9,11 +9,12 @@ import { fixture } from './fixture.mjs';
 const { Client } = await import(pathToFileURL(resolveFrom('memory', '@modelcontextprotocol/sdk/client/index.js')));
 const { StdioClientTransport } = await import(pathToFileURL(resolveFrom('memory', '@modelcontextprotocol/sdk/client/stdio.js')));
 
-async function connected(context, data) {
+async function connected(context, data, threadId = '') {
   const client = new Client({ name: 'coda-memory-fixture', version: '1.0.0' });
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(pluginDir('memory'), 'scripts/server.mjs')], cwd: data.project,
     env: { HOME: data.home, CLAUDE_CONFIG_DIR: join(data.home, '.claude'), CODEX_HOME: join(data.home, '.codex'),
-      CODA_PLUGIN_SETTINGS: JSON.stringify(data.settings), CODA_PLUGIN_STATE: data.state }, stderr: 'pipe' });
+      CODA_PLUGIN_SETTINGS: JSON.stringify(data.settings), CODA_PLUGIN_STATE: data.state,
+      ...(threadId ? { CODA_THREAD_ID: threadId } : {}) }, stderr: 'pipe' });
   context.after(() => client.close());
   await client.connect(transport);
   return client;
@@ -69,4 +70,20 @@ test('stdio discovers sources without settings, permits explicit selection or al
   assert.equal(JSON.parse(files.content[0].text).total, 1);
   assert.equal((await call('memory_read', { id: JSON.parse(files.content[0].text).files[0].id })).isError, undefined);
   assert.equal((await call('memory_select', { ...args, all: true })).isError, true);
+});
+
+test('stdio restarts restore the host-provided thread selection and closing removes it durably', async context => {
+  const data = fixture(context), first = await connected(context, data, 'thread-1');
+  const call = (client, name, args = {}) => client.callTool({ name, arguments: args });
+  const args = { runtime: 'codex', project: data.project, ids: ['claude'] };
+  assert.ok(!(await call(first, 'memory_select', args)).isError);
+  await first.close();
+  const resumed = await connected(context, data, 'thread-1'), other = await connected(context, data, 'thread-2');
+  assert.deepEqual(JSON.parse((await call(resumed, 'memory_sources')).content[0].text).selected, ['claude']);
+  assert.ok(!(await call(resumed, 'memory_search', { query: 'pnpm' })).isError);
+  assert.equal((await call(other, 'memory_files')).isError, true);
+  assert.ok(!(await call(resumed, 'memory_select', { ...args, ids: [] })).isError);
+  await resumed.close();
+  const closed = await connected(context, data, 'thread-1');
+  assert.equal((await call(closed, 'memory_files')).isError, true);
 });

@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Memory } from './memory.mjs';
 
-const memory = new Memory(JSON.parse(process.env.CODA_PLUGIN_SETTINGS ?? '{}'), process.env.CODA_PLUGIN_STATE);
+const memory = new Memory(JSON.parse(process.env.CODA_PLUGIN_SETTINGS ?? '{}'), process.env.CODA_PLUGIN_STATE, undefined, process.env.CODA_THREAD_ID ?? null);
 const tools = [
   { name: 'memory_sources', description: '自动发现本机 Claude/Codex 记忆目录，并合并已登记来源；只查元数据，不读正文、不自动选择。项目标注仅表示来源，不限制跨项目加载。', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'memory_select', description: '按用户明确选择加载任意项目、任意运行时的来源；传 ids 选择部分，用户明确要求全部时传 all: true（二选一）。空 ids 关闭。返回短索引而非全部正文；完整正文通过 files/read 分页读取。',

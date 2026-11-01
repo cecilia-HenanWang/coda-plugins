@@ -1,4 +1,6 @@
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { directory, read, sources } from './sources.mjs';
 import { refresh } from './catalog.mjs';
 import { discover } from './discovery.mjs';
@@ -23,11 +25,34 @@ function nativePreviews(selected, entries) {
 }
 
 export class Memory {
-  constructor(settings, state, discovery = {}) {
+  constructor(settings, state, discovery = {}, threadId = null) {
     this.settings = settings;
     this.state = state;
     this.discovery = discovery;
+    if (threadId !== null && !/^[\w-]{1,100}$/.test(threadId)) throw new Error('Coda 会话 ID 无效');
+    this.selectionFile = threadId === null ? null : join(directory(state), 'sessions', `${threadId}.json`);
     this.selected = [];
+    if (this.selectionFile) {
+      try {
+        const selected = JSON.parse(readFileSync(this.selectionFile, 'utf8'));
+        if (!Array.isArray(selected)) throw new Error('会话记忆选择须为来源数组');
+        this.selected = selected;
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+
+  setSelection(selected) {
+    if (this.selectionFile) {
+      if (selected.length) {
+        mkdirSync(dirname(this.selectionFile), { recursive: true, mode: 0o700 });
+        const temporary = `${this.selectionFile}.${randomUUID()}.tmp`;
+        try {
+          writeFileSync(temporary, `${JSON.stringify(selected)}\n`, { flag: 'wx', mode: 0o600 });
+          renameSync(temporary, this.selectionFile);
+        } finally { rmSync(temporary, { force: true }); }
+      } else rmSync(this.selectionFile, { force: true });
+    }
+    this.selected = selected;
   }
 
   list() {
@@ -37,7 +62,7 @@ export class Memory {
   }
 
   select({ runtime, project, ids, all = false, includeGlobal = false, confirmProject = false }) {
-    this.selected = [];
+    this.setSelection([]);
     if (typeof runtime !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/.test(runtime)) throw new Error('请明确当前 Agent ID，例如 claude-sdk、codex 或 opencode');
     if (runtime === 'claude-sdk') runtime = 'claude';
     if (typeof includeGlobal !== 'boolean') throw new Error('includeGlobal 必须是布尔值');
@@ -54,9 +79,10 @@ export class Memory {
     });
     const entries = chosen.flatMap(source => refresh(this.state, source));
     const previews = nativePreviews(chosen, entries);
-    this.selected = chosen;
+    this.setSelection(chosen);
     return { notice: NOTICE, currentRuntime: runtime, project, selectedSources: chosen, discoveryErrors: available.errors,
-      warnings: chosen.some(source => source.runtime === runtime) ? ['所选包含当前 Agent 的原生来源，可能与原生加载重复。'] : [],
+      warnings: [...(chosen.some(source => source.runtime === runtime) ? ['所选包含当前 Agent 的原生来源，可能与原生加载重复。'] : []),
+        ...(!this.selectionFile ? ['宿主未提供 Coda 会话 ID，选择仅对当前进程有效。'] : [])],
       count: entries.length, index: entries.slice(0, 20), hasMore: entries.length > 20, nextOffset: entries.length > 20 ? 20 : null,
       ...previews };
   }
